@@ -142,6 +142,7 @@ class PetController(NSObject):
                     cell = img.crop((left,top,left+CELL_W,top+CELL_H))
                     self._cells_pil[(row,col)] = cell.copy()
                     self._cells[(row,col)] = pil_to_nsimage(cell)
+        print(f"  Main cells: {len(self._cells)} loaded")
         # Evil static (idle, runr, runl, look)
         decoded = os.path.join(BASE,"decoded")
         for key,(row,fps,dn,pad) in EVIL_STATIC.items():
@@ -206,13 +207,9 @@ class PetController(NSObject):
             self._restore_window(); self.show_cell(); self.restart_timer(fps); return
         # Restore normal window
         self._restore_window()
-        cur = self._window.frame()
-        if int(cur.size.width)!=w or int(cur.size.height)!=h:
-            by = cur.origin.y; cx = cur.origin.x + cur.size.width/2
-            self._window.setFrame_display_animate_(NSMakeRect(cx-w/2,by,w,h), False, False)
-            self._view.setFrame_(NSMakeRect(0,0,w,h))
         for row,(n,frames,fps) in ROWS.items():
-            if n==name: self._row=row; self._frame=0; self.show_cell(); self.restart_timer(fps); return
+            if n==name:
+                self._row=row; self._frame=0; self.show_cell(); self.restart_timer(fps); return
 
     def _restore_window(self):
         w,h = int(CELL_W*SCALE), int(CELL_H*SCALE)
@@ -249,11 +246,6 @@ class PetController(NSObject):
 
     def show_cell(self):
         global PERSONA, SCALE
-        if not hasattr(self, '_dbg_cnt'): self._dbg_cnt = 0
-        self._dbg_cnt += 1
-        if self._dbg_cnt % 30 == 0:
-            print(f"  [dbg] row={self._row} frame={self._frame} persona={PERSONA}")
-        # Dynamic sizing for angry/grin/smirk
         for key,(row,_,_,dyn) in EVIL_SPECIAL.items():
             if self._row==row and dyn and key in self._evil:
                 pl = self._evil[key]["pil"]
@@ -285,8 +277,9 @@ class PetController(NSObject):
             base_pil, base_ns = self._get_override_frame(self._row, self._frame)
         # Main spritesheet
         if base_ns is None:
-            base_pil = self._cells_pil.get((self._row, self._frame))
-            base_ns = self._cells.get((self._row, self._frame))
+            key = (self._row, self._frame)
+            base_pil = self._cells_pil.get(key)
+            base_ns = self._cells.get(key)
 
         if self._active_props and base_pil is not None:
             self._view.setImage_(self.composite_props(base_pil))
@@ -309,7 +302,7 @@ class PetController(NSObject):
         self.show_cell()
         if self._temp_state and not self._persistent:
             if time.time()-self._temp_start >= TEMP_DUR.get(self._temp_state,2.0):
-                self._temp_state = None; self.switch_to("idle")
+                self._temp_state = None; self._persistent = False; self.switch_to("idle")
 
     def set_temp(self, name, persistent=False):
         self._temp_state = name; self._temp_start = time.time()
@@ -348,6 +341,7 @@ class PetController(NSObject):
     def handleRightMouseDown_(self, event): self.show_menu(event)
 
     def handleMouseMoved_(self, event):
+        if self._persistent: return  # menu-selected, don't interrupt
         if self._temp_state and self._temp_state!="looking": return
         wf = self._window.frame()
         cx,cy = wf.origin.x+wf.size.width/2, wf.origin.y+wf.size.height/2
@@ -422,9 +416,8 @@ class PetController(NSObject):
         tag = s.tag()
         for key,(row,_,_,_) in EVIL_SPECIAL.items():
             if row==tag: self.set_temp(key, persistent=True); return
-        name = ROWS[tag][0]
-        self._persistent = True; self._temp_state = None  # clear temp so no auto-return
-        self.switch_to(name)
+        self._persistent = True; self._temp_state = None
+        self.switch_to(ROWS[tag][0])
     def menuQuit_(self,s): NSApp().terminate_(None)
 
     # ── CLAUDE SYNC ──────────────────────────────────

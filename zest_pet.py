@@ -150,7 +150,7 @@ class PetController(NSObject):
             if ns: self._evil[key] = {"ns":ns,"pil":pl,"row":row,"fps":fps}; print(f"Loaded evil {key}: {len(ns)}f")
         # Evil specials
         for name,(row,fps,dn,dyn) in EVIL_SPECIAL.items():
-            count = 14 if name=="poop" else 8
+            count = 15 if name=="poop" else 8
             ns,pl = load_frames_from_dir(os.path.join(decoded,dn), count)
             if ns: self._evil[name] = {"ns":ns,"pil":pl,"row":row,"fps":fps,"dyn":dyn}; print(f"Loaded {dn}: {len(ns)}f")
         # Global overrides

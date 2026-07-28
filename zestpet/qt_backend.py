@@ -79,6 +79,8 @@ class PetWindow(QWidget):
         self._dragging = False
         self._press_time = 0.0
         self._swallow_next_release = False
+        self._cycle_index: Optional[int] = None
+        self._clip_at_press: Optional[str] = None
         self._last_drag_x = 0
         self._last_interaction = time.perf_counter()
         self._wander_target: Optional[int] = None
@@ -263,8 +265,27 @@ class PetWindow(QWidget):
             self.render()
 
     # ── input ────────────────────────────────────────
+    def _log_event(self, what: str) -> None:
+        """Append an interaction trace when config['debug'] is on.
+
+        Real double-clicks can only be produced by a person, so this is the
+        only way to see what the OS actually delivers.
+        """
+        if not self.config.get("debug"):
+            return
+        try:
+            core.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(core.CONFIG_PATH.parent / "events.log", "a") as fh:
+                fh.write("%.3f %-12s clip=%-14s held=%s swallow=%s\n" % (
+                    time.perf_counter(), what,
+                    self.state.clip.name if self.state.clip else None,
+                    self.state.held, self._swallow_next_release))
+        except OSError:
+            pass
+
     def on_press(self, event) -> None:
         if event.button() == Qt.MouseButton.RightButton:
+            self._log_event("right-press")
             self.show_menu(event.globalPosition().toPoint())
             return
         if event.button() != Qt.MouseButton.LeftButton:
@@ -274,12 +295,16 @@ class PetWindow(QWidget):
         self._last_drag_x = self._drag_origin.x()
         self._dragging = False
         self._press_time = time.perf_counter()
+        # Remember what was showing before the click, so a following
+        # double-click can anchor its cycle on it rather than on the wave.
+        self._clip_at_press = self.state.clip.name if self.state.clip else None
         # A fresh press starts a new interaction. Clearing here matters because
         # the trailing release after a double-click does not always arrive, and
         # a stale flag would swallow the next genuine click.
         self._swallow_next_release = False
         self._wander_target = None
         self._fall_velocity = None
+        self._log_event("press")
 
     def on_move(self, event) -> None:
         if self._drag_origin is None or not (event.buttons() & Qt.MouseButton.LeftButton):
@@ -307,6 +332,7 @@ class PetWindow(QWidget):
         if self._swallow_next_release:
             self._swallow_next_release = False
             self._drag_origin = None
+            self._log_event("release/swallowed")
             return
         if self._dragging:
             self._dragging = False
@@ -316,6 +342,7 @@ class PetWindow(QWidget):
         elif time.perf_counter() - self._press_time < CLICK_MAX_SECONDS:
             self.state.play("waving", temp=True)
         self._drag_origin = None
+        self._log_event("release")
         self.render()
 
     def on_double_click(self, event) -> None:
@@ -325,14 +352,26 @@ class PetWindow(QWidget):
         self._dragging = False
         self._drag_origin = None
         self._swallow_next_release = True
-        self._last_interaction = time.perf_counter()
-        self._wander_target = None
         order = self.library.names_for(self.state.persona)
         if not order:
             return
-        current = self.state.clip.name if self.state.clip else None
-        index = order.index(current) + 1 if current in order else 0
-        self.pick_animation(order[index % len(order)])
+        # The cycle position is tracked separately instead of being read off the
+        # current clip: the first click of a double-click already played the
+        # wave, so using the live clip as the anchor made every double-click
+        # land on the animation after "waving".
+        if self._cycle_index is None:
+            anchor = self._clip_at_press
+            self._cycle_index = (order.index(anchor) + 1) % len(order) if anchor in order else 0
+        else:
+            self._cycle_index = (self._cycle_index + 1) % len(order)
+        self._play_held(order[self._cycle_index])
+        self._log_event("DOUBLE-CLICK")
+
+    def _play_held(self, name: str) -> None:
+        self._last_interaction = time.perf_counter()
+        self._wander_target = None
+        self.state.play(name, held=True)
+        self.render()
 
     def _start_fall_if_airborne(self) -> None:
         if not self.config.get("gravity", True):
@@ -400,10 +439,8 @@ class PetWindow(QWidget):
 
     # ── commands ─────────────────────────────────────
     def pick_animation(self, name: str) -> None:
-        self._last_interaction = time.perf_counter()
-        self._wander_target = None
-        self.state.play(name, held=True)
-        self.render()
+        self._cycle_index = None  # an explicit pick restarts the double-click cycle
+        self._play_held(name)
 
     def release_hold(self) -> None:
         self.state.play("idle")
@@ -411,6 +448,7 @@ class PetWindow(QWidget):
         self.render()
 
     def set_persona(self, persona: str) -> None:
+        self._cycle_index = None  # the animation list differs per persona
         self.state.set_persona(persona)
         self.config["persona"] = persona
         self._invalidate()

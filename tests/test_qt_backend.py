@@ -213,15 +213,37 @@ def test_single_click_after_double_click_still_waves(window):
     assert window.state.clip.name == "waving"
 
 
-def test_double_click_cycles_to_the_next_animation(window, library):
+def test_double_click_cycles_under_the_real_event_sequence(window, library):
+    """Replays what macOS actually delivered (captured from a real session):
+
+        press / release(-> waving) / doubleClick / release(swallowed)
+
+    The first release plays the wave, so anchoring the cycle on the live clip
+    made every double-click land on the animation after "waving" — six real
+    double-clicks produced "jumping" six times.
+    """
     order = library.names_for(window.state.persona)
     window.state.play("idle")
+    window._cycle_index = None
     seen = []
     for _ in range(len(order)):
+        window.on_press(FakeMouseEvent())
+        window.on_release(FakeMouseEvent())        # plays waving
         window.on_double_click(FakeMouseEvent())
-        window.on_release(FakeMouseEvent())
+        window.on_release(FakeMouseEvent())        # trailing, swallowed
         seen.append(window.state.clip.name)
-    assert seen == order[1:] + order[:1], f"expected to walk the menu order, got {seen}"
+    assert len(set(seen)) == len(order), f"double-click got stuck: {seen}"
+    assert seen == order[1:] + order[:1], f"expected menu order, got {seen}"
+
+
+def test_menu_pick_restarts_the_double_click_cycle(window, library):
+    order = library.names_for(window.state.persona)
+    window.pick_animation("review")
+    assert window._cycle_index is None
+    window.on_press(FakeMouseEvent())
+    window.on_double_click(FakeMouseEvent())
+    expected = order[(order.index("review") + 1) % len(order)]
+    assert window.state.clip.name == expected
 
 
 def test_double_click_cycle_includes_persona_only_clips(window, library):

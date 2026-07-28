@@ -71,6 +71,31 @@ folder inherits timing from the atlas row it replaces.
 | `pad` | letterbox art smaller than the cell into the full 192×208 cell | `false` |
 | `dynamic` | let the window resize to this art's own dimensions | `false` |
 
+### Importing a chroma-keyed strip
+
+Art often arrives as one image holding every frame on a magenta background.
+`tools/import_strip.py` turns that into an animation folder:
+
+```bash
+python tools/import_strip.py ~/Desktop/strip.png evil/rub-leg \
+    --frames 8 --fps 8 --duration 4 --dynamic
+```
+
+It samples the image to find the key colour (renders come out slightly off
+from #FF00FF — one measured (229, 4, 219) with a faint gradient), keys the
+background out with a soft edge, removes magenta fringing, and writes every
+frame at one size anchored bottom-left so fixed scenery stays put.
+
+Frame boundaries are found by locating columns that are entirely background,
+not by dividing the width evenly: strips are rarely evenly spaced, and small
+detached pieces such as motion lines get merged back into their own frame.
+`--frames` makes the tool refuse to write if it disagrees with you.
+
+Use `--dynamic` when the art is a different shape from the 192x208 cell (the
+leg-rubbing strip is 184x268); the window then takes the art's own size and
+keeps its bottom edge fixed, so the pet's feet stay on the floor. Use `--pad`
+instead to letterbox into the standard cell.
+
 ### A new mode (persona)
 
 ```
@@ -109,8 +134,8 @@ two-row) at the right cell size for drawing new frames, plus
 zestpet/core.py        assets, animation clips, state machine — no GUI imports
 zestpet/qt_backend.py  window, rendering, input, menu, tray
 main.py                entry point
-tests/                 77 tests, no display required
-tools/migrate_assets.py  one-shot migration from the old decoded/ layout
+tests/                 85 tests, no display required
+tools/import_strip.py  turn a chroma-keyed sprite strip into an animation
 ```
 
 `core.py` has no Qt dependency, so animation and timing logic is testable

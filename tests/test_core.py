@@ -296,7 +296,9 @@ def test_parity_evil_overrides_present(lib):
 
 
 def test_parity_evil_specials_present(lib):
-    assert set(lib.persona_only("evil")) == LEGACY_EVIL_SPECIALS
+    """The old evil-only clips must all survive. New ones may be added, so this
+    checks containment rather than equality."""
+    assert LEGACY_EVIL_SPECIALS <= set(lib.persona_only("evil"))
 
 
 def test_parity_directory_overrides_win_over_atlas(lib):

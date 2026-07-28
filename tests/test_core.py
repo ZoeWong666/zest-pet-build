@@ -320,11 +320,6 @@ def test_parity_dynamic_clips_keep_own_size(lib):
         assert clip.size != lib.cell
 
 
-def test_parity_double_click_pool_is_playable(lib):
-    playable = [n for n in core.DOUBLE_CLICK_POOL if lib.has(n, COMMON)]
-    assert playable == core.DOUBLE_CLICK_POOL
-
-
 def test_parity_scale_steps_unchanged():
     from zestpet import qt_backend
     assert qt_backend.SCALES == LEGACY_SCALES

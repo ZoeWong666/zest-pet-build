@@ -78,6 +78,7 @@ class PetWindow(QWidget):
         self._drag_window_origin: Optional[QPoint] = None
         self._dragging = False
         self._press_time = 0.0
+        self._swallow_next_release = False
         self._last_drag_x = 0
         self._last_interaction = time.perf_counter()
         self._wander_target: Optional[int] = None
@@ -273,6 +274,10 @@ class PetWindow(QWidget):
         self._last_drag_x = self._drag_origin.x()
         self._dragging = False
         self._press_time = time.perf_counter()
+        # A fresh press starts a new interaction. Clearing here matters because
+        # the trailing release after a double-click does not always arrive, and
+        # a stale flag would swallow the next genuine click.
+        self._swallow_next_release = False
         self._wander_target = None
         self._fall_velocity = None
 
@@ -296,6 +301,13 @@ class PetWindow(QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         self._last_interaction = time.perf_counter()
+        # Qt delivers press, release, doubleClick, release. Without this the
+        # trailing release counts as a single click and overwrites whatever the
+        # double-click just picked.
+        if self._swallow_next_release:
+            self._swallow_next_release = False
+            self._drag_origin = None
+            return
         if self._dragging:
             self._dragging = False
             self.state.play("idle")
@@ -307,16 +319,20 @@ class PetWindow(QWidget):
         self.render()
 
     def on_double_click(self, event) -> None:
+        """Step to the next animation, so double-clicking browses through them."""
         if event.button() != Qt.MouseButton.LeftButton:
             return
         self._dragging = False
         self._drag_origin = None
+        self._swallow_next_release = True
         self._last_interaction = time.perf_counter()
-        pool = [n for n in core.DOUBLE_CLICK_POOL if self.library.has(n, self.state.persona)]
-        pool += self.library.persona_only(self.state.persona)
-        if pool:
-            self.state.play(random.choice(pool), temp=True)
-            self.render()
+        self._wander_target = None
+        order = self.library.names_for(self.state.persona)
+        if not order:
+            return
+        current = self.state.clip.name if self.state.clip else None
+        index = order.index(current) + 1 if current in order else 0
+        self.pick_animation(order[index % len(order)])
 
     def _start_fall_if_airborne(self) -> None:
         if not self.config.get("gravity", True):

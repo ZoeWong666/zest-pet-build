@@ -190,20 +190,56 @@ def test_single_click_waves(window):
     assert window.state.clip.name == "waving"
 
 
-def test_double_click_plays_something_from_the_pool(window):
+def test_double_click_survives_the_trailing_release(window):
+    """Qt delivers press, release, doubleClick, release. The trailing release
+    used to be treated as a single click and overwrote the double-click action
+    with a wave, which made the feature look broken."""
+    window.on_press(FakeMouseEvent())
+    window.on_release(FakeMouseEvent())
+    window.on_press(FakeMouseEvent())
+    window.on_release(FakeMouseEvent())
     window.on_double_click(FakeMouseEvent())
-    assert window.state.clip.name in core.DOUBLE_CLICK_POOL
+    picked = window.state.clip.name
+    window.on_release(FakeMouseEvent())  # the trailing release
+    assert window.state.clip.name == picked, "trailing release clobbered the double-click"
+    assert window.state.clip.name != "waving" or picked == "waving"
 
 
-def test_double_click_can_reach_evil_specials(window, library):
+def test_single_click_after_double_click_still_waves(window):
+    """The release-swallowing flag must not leak into the next interaction."""
+    window.on_double_click(FakeMouseEvent())          # sets the swallow flag
+    window.on_press(FakeMouseEvent())                 # new interaction clears it
+    window.on_release(FakeMouseEvent())
+    assert window.state.clip.name == "waving"
+
+
+def test_double_click_cycles_to_the_next_animation(window, library):
+    order = library.names_for(window.state.persona)
+    window.state.play("idle")
+    seen = []
+    for _ in range(len(order)):
+        window.on_double_click(FakeMouseEvent())
+        window.on_release(FakeMouseEvent())
+        seen.append(window.state.clip.name)
+    assert seen == order[1:] + order[:1], f"expected to walk the menu order, got {seen}"
+
+
+def test_double_click_cycle_includes_persona_only_clips(window, library):
     window.set_persona("evil")
-    pool = set(core.DOUBLE_CLICK_POOL) | set(library.persona_only("evil"))
+    order = library.names_for("evil")
     seen = set()
-    for _ in range(400):
+    for _ in range(len(order) * 2):
         window.on_double_click(FakeMouseEvent())
         seen.add(window.state.clip.name)
-    assert seen <= pool
-    assert seen & set(library.persona_only("evil")), "evil specials unreachable by double-click"
+    assert set(library.persona_only("evil")) <= seen
+
+
+def test_double_click_holds_the_animation(window):
+    window.on_double_click(FakeMouseEvent())
+    name = window.state.clip.name
+    for _ in range(400):
+        window.tick()
+    assert window.state.clip.name == name, "double-clicked animation should stay put"
 
 
 def test_drag_moves_window_and_plays_direction(window):

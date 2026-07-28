@@ -115,9 +115,6 @@ def drop_white_background(img: Image.Image) -> Image.Image:
 LOOK_CLIPS = ("look-A", "look-B")
 LOOK_STEPS = 16
 
-# Clips reachable by double-clicking the pet (plus any persona-only clips).
-DOUBLE_CLICK_POOL = ["waving", "jumping", "failed", "running", "review"]
-
 
 def look_frame(dx: float, dy_up: float) -> Tuple[str, int]:
     """Map a direction vector to (clip name, frame index).

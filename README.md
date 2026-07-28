@@ -11,9 +11,9 @@ python main.py
 | Input | Result |
 | --- | --- |
 | Click | waves |
-| Double-click | random surprise action |
+| Double-click | steps to the next animation, so you can browse them |
 | Drag | runs in the direction you pull, falls when dropped |
-| Right-click | full menu (mode, size, props, animations, behaviour) |
+| Right-click | menu: mode, props, size, then every animation |
 | Move the cursor nearby | turns its head to watch you |
 | Leave it alone | strolls along the screen on its own |
 | Tray icon | show/hide, recentre, click-through, quit |

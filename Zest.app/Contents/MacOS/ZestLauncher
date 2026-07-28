@@ -1,9 +1,0 @@
-#!/bin/bash
-DIR="$(cd "$(dirname "$0")/../Resources" && pwd)"
-cd "$DIR"
-PY=$(which python3 2>/dev/null || which python3.13 2>/dev/null)
-if [ -z "$PY" ]; then
-    osascript -e 'display dialog "Python 3 not found." with title "Zest" buttons {"OK"} default button "OK"'
-    exit 1
-fi
-"$PY" -u zest_pet.py &

@@ -1,3 +1,17 @@
 .DS_Store
 __pycache__/
 *.pyc
+
+# Virtualenv
+.venv/
+
+# Build output — kept on disk for local VM testing, never committed.
+# Windows builds come from the GitHub Actions artifact.
+Zest.exe
+Zest.app/
+dist/
+build/
+*.spec
+
+# Local settings live in ~/.zestpet/, not here.
+.pytest_cache/

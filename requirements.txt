@@ -1,0 +1,7 @@
+# Pinned so a new upstream release can't break the build without us choosing it.
+PyQt6==6.9.1
+pillow==11.3.0
+
+# Development only
+pytest==8.4.1
+pyinstaller==6.15.0

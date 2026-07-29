@@ -57,6 +57,12 @@ class Clip:
         if self.dynamic and self.frames:
             self._pad_to_widest()
         self.size: Tuple[int, int] = self.frames[0].size if self.frames else (0, 0)
+        # Where the artwork actually ends inside the canvas. Frames carry
+        # different amounts of transparent padding below the paws — atlas cells
+        # leave a few pixels, imported strips none — so resting the canvas edge
+        # on the floor would park the pet at a different height per animation.
+        bottoms = [f.getbbox()[3] for f in self.frames if f.getbbox()]
+        self.content_bottom: int = max(bottoms) if bottoms else self.size[1]
 
     def _pad_to_widest(self) -> None:
         """Centre narrow frames on the widest frame so the pet doesn't jitter.

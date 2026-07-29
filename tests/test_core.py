@@ -232,6 +232,36 @@ def test_look_clips_are_never_overridden(lib):
             assert clip.frame_count == core.LOOK_STEPS // len(core.LOOK_CLIPS)
 
 
+def test_only_one_platform_difference_exists():
+    """Windows and macOS must behave identically apart from the window type.
+
+    macOS needs Qt.Window because a Qt.Tool window is an NSPanel and the system
+    hides panels when the app deactivates. Everything else — animations, input,
+    menu, behaviour — runs the same code on both. Any new platform branch should
+    be a deliberate decision, so this test makes one show up as a failure.
+    """
+    import re
+    from pathlib import Path
+    source_root = Path(core.__file__).parent
+    branches = []
+    for path in sorted(source_root.glob("*.py")):
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if re.search(r"sys\.platform|platform\.(system|machine)|os\.name", line):
+                if line.lstrip().startswith("#"):
+                    continue
+                branches.append(f"{path.name}:{number}: {line.strip()}")
+    assert len(branches) == 1, "unexpected platform-specific code:\n" + "\n".join(branches)
+    assert "PET_WINDOW_KIND" in branches[0]
+
+
+def test_window_kind_is_correct_for_this_platform():
+    import sys as _sys
+    from zestpet.qt_backend import PET_WINDOW_KIND
+    from PyQt6.QtCore import Qt as _Qt
+    expected = _Qt.WindowType.Window if _sys.platform == "darwin" else _Qt.WindowType.Tool
+    assert PET_WINDOW_KIND == expected
+
+
 def test_look_covers_sixteen_distinct_orientations():
     import math
     seen = set()
@@ -311,7 +341,7 @@ LEGACY_ATLAS_STATES = [
 ]
 # "look-A" was in this set, but the evil folder held forward-facing expression
 # frames rather than head orientations, which broke cursor-watching in Evil
-# mode. That art is now the separate "taunt" clip and look-A falls back to the
+# mode. That art is now the separate "head-tilt" clip and look-A falls back to the
 # atlas. See test_look_clips_are_never_overridden.
 LEGACY_EVIL_OVERRIDES = {"idle", "running-right", "running-left"}
 LEGACY_EVIL_SPECIALS = {"angry", "grin", "smirk", "poop"}
@@ -340,10 +370,14 @@ def test_parity_evil_overrides_present(lib):
 
 
 def test_evil_expression_frames_kept_as_their_own_clip(lib):
-    """The art that used to shadow look-A is still reachable, just renamed."""
-    taunt = lib.resolve("taunt", "evil")
-    assert taunt is not None and taunt.frame_count == 8
-    assert lib.resolve("taunt", COMMON) is None
+    """The art that used to shadow look-A is still reachable, just renamed.
+
+    Named for what it shows — a head tilt with a smirk — rather than something
+    interpretive, so nobody has to open the folder to find out.
+    """
+    tilt = lib.resolve("head-tilt", "evil")
+    assert tilt is not None and tilt.frame_count == 8
+    assert lib.resolve("head-tilt", COMMON) is None
 
 
 def test_parity_evil_specials_present(lib):

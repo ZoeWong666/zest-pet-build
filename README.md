@@ -161,7 +161,7 @@ two-row) at the right cell size for drawing new frames, plus
 zestpet/core.py        assets, animation clips, state machine — no GUI imports
 zestpet/qt_backend.py  window, rendering, input, menu, tray
 main.py                entry point
-tests/                 93 tests, no display required
+tests/                 99 tests, no display required
 tools/import_strip.py  turn a chroma-keyed sprite strip into an animation
 ```
 

@@ -96,13 +96,38 @@ def test_window_kind_avoids_the_macos_panel_auto_hide(window):
 
 
 def test_first_run_stands_on_the_desktop_floor(library, tmp_path, monkeypatch, app):
-    from PyQt6.QtGui import QGuiApplication
-    from zestpet.qt_backend import FLOOR_MARGIN
     monkeypatch.setattr(core, "CONFIG_PATH", tmp_path / "fresh.json")
     win = PetWindow(library, core.load_config())
-    area = QGuiApplication.primaryScreen().availableGeometry()
-    assert win.y() == area.bottom() - win.height() - FLOOR_MARGIN
+    assert win.y() == win._floor_y()
     win.close()
+
+
+def test_floor_keeps_the_paws_clear_of_the_taskbar(window):
+    """Qt reports no reservation when the Dock auto-hides, which dropped the pet
+    to the very bottom and hid its feet. Fall back to a default reserve, and
+    measure from the artwork rather than the transparent canvas edge."""
+    from PyQt6.QtGui import QGuiApplication
+    from zestpet.qt_backend import DEFAULT_BOTTOM_RESERVE, FLOOR_MARGIN
+    screen = QGuiApplication.primaryScreen()
+    full, available = screen.geometry(), screen.availableGeometry()
+    reserved = max(full.bottom() - available.bottom(), DEFAULT_BOTTOM_RESERVE)
+    clip = window.state.clip
+    visible_bottom = round(clip.content_bottom * window.height() / clip.size[1])
+    assert window._floor_y() == full.bottom() - reserved - FLOOR_MARGIN - visible_bottom
+    # the paws must land above the reserved strip, never inside it
+    assert window._floor_y() + visible_bottom <= full.bottom() - reserved
+
+
+def test_resting_paw_height_is_the_same_for_every_clip(window, library):
+    """Frames pad differently below the paws; the pet must still stand level."""
+    heights = set()
+    for name in library.names_for(window.state.persona):
+        window.pick_animation(name)
+        window.render()
+        clip = window.state.clip
+        visible_bottom = round(clip.content_bottom * window.height() / clip.size[1])
+        heights.add(window._floor_y() + visible_bottom)
+    assert len(heights) == 1, f"paw line differs between animations: {heights}"
 
 
 def test_window_matches_cell_size_at_100_percent(window, library):
@@ -300,12 +325,12 @@ def test_drop_from_height_falls_to_the_floor(window):
     window.on_release(FakeMouseEvent())
     assert window._fall_velocity is not None
     assert window.state.clip.name == "jumping"
+    expected_floor = window._floor_y()
     for _ in range(600):
         window.tick()
         if window._fall_velocity is None:
             break
-    floor = window._current_screen_geometry().bottom() - window.height() - 8
-    assert window.y() == floor
+    assert window.y() == expected_floor
     assert window.state.clip.name == "idle"
 
 

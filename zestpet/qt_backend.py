@@ -27,6 +27,9 @@ WANDER_SPEED = 55.0  # px/sec
 MIN_WANDER_DISTANCE = 40  # don't bother strolling less than this
 GRAVITY = 1400.0  # px/sec^2
 FLOOR_MARGIN = 8
+# Used when the platform does not report a taskbar or Dock reservation, which
+# happens on macOS whenever the Dock is set to auto-hide.
+DEFAULT_BOTTOM_RESERVE = 60
 PERSONA_LABEL = {COMMON: "🐶 Normal", "evil": "😈 Evil"}
 
 # On macOS a Qt.Tool window becomes an NSPanel, and the system hides panels as
@@ -142,6 +145,33 @@ class PetWindow(QWidget):
         screen = QGuiApplication.screenAt(center) or QGuiApplication.primaryScreen()
         return screen.availableGeometry()
 
+    def _floor_y(self) -> int:
+        """Window top position that rests the pet's visible paws on the floor.
+
+        Two corrections over "bottom of the available area":
+
+        Qt does not always report the taskbar or Dock. On this machine
+        availableGeometry().bottom() equals the full screen bottom whenever the
+        Dock is set to auto-hide, and the value changes as that setting changes,
+        so the pet dropped to the very bottom and its feet went behind the Dock.
+        When nothing is reported, hold back a default reserve instead.
+
+        The frames also carry different amounts of transparent padding under the
+        paws, so the position is measured from the artwork, not the canvas edge.
+        """
+        center = self.geometry().center()
+        screen = QGuiApplication.screenAt(center) or QGuiApplication.primaryScreen()
+        full, available = screen.geometry(), screen.availableGeometry()
+        reserved = full.bottom() - available.bottom()
+        if reserved <= 0:
+            reserved = DEFAULT_BOTTOM_RESERVE
+        baseline = full.bottom() - reserved - FLOOR_MARGIN
+        clip = self.state.clip
+        if clip is None or not clip.size[1]:
+            return baseline - self.height()
+        visible_bottom = round(clip.content_bottom * self.height() / clip.size[1])
+        return baseline - visible_bottom
+
     def _restore_position(self) -> None:
         pos = self.config.get("pos")
         if isinstance(pos, (list, tuple)) and len(pos) == 2:
@@ -153,8 +183,7 @@ class PetWindow(QWidget):
         # First run: stand on the desktop near the right edge rather than
         # floating in mid-air, so gravity and wandering start from the floor.
         area = QGuiApplication.primaryScreen().availableGeometry()
-        self.move(area.right() - self.width() - 120,
-                  area.bottom() - self.height() - FLOOR_MARGIN)
+        self.move(area.right() - self.width() - 120, self._floor_y())
 
     # ── rendering ────────────────────────────────────
     def render(self) -> None:
@@ -199,8 +228,7 @@ class PetWindow(QWidget):
     def _step_fall(self) -> bool:
         if self._fall_velocity is None:
             return False
-        area = self._current_screen_geometry()
-        floor = area.bottom() - self.height() - FLOOR_MARGIN
+        floor = self._floor_y()
         self._fall_velocity += GRAVITY * (self._timer.interval() / 1000.0)
         new_y = int(self.y() + self._fall_velocity * (self._timer.interval() / 1000.0))
         if new_y >= floor:
@@ -393,8 +421,7 @@ class PetWindow(QWidget):
     def _start_fall_if_airborne(self) -> None:
         if not self.config.get("gravity", True):
             return
-        area = self._current_screen_geometry()
-        floor = area.bottom() - self.height() - FLOOR_MARGIN
+        floor = self._floor_y()
         if self.y() < floor - 4:
             self._fall_velocity = 0.0
             self.state.play("jumping")

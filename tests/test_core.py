@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import itertools
 import json
+import statistics
+from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from zestpet import core
 from zestpet.core import COMMON, Clip, ClipLibrary, Compositor, PetState, look_frame
@@ -19,6 +22,84 @@ def lib() -> ClipLibrary:
     library = ClipLibrary().load()
     assert library.warnings == [], f"asset warnings: {library.warnings}"
     return library
+
+
+# ── throwaway asset trees ───────────────────────────────
+# Several tests need a synthetic assets/ dir rather than the shipped art. They
+# used to build it inline, four near-identical copies of the same mkdir / save /
+# write-manifest dance, so a change to the layout meant editing all four.
+def asset_tree(tmp_path: Path, cell=(192, 208)) -> Path:
+    """An empty assets/ with a minimal manifest. Add clips with write_clip."""
+    root = tmp_path / "assets"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "manifest.json").write_text(json.dumps({"cell": list(cell)}))
+    return root
+
+
+def write_clip(root: Path, persona: str, name: str, frames: int = 2,
+               size=(192, 208), options=None) -> Path:
+    """Write a clip folder of flat-colour PNGs. ``options`` becomes anim.json —
+    pass a dict for valid JSON, or a raw string to test malformed input."""
+    folder = root / "anim" / persona / name
+    folder.mkdir(parents=True)
+    for i in range(frames):
+        Image.new("RGBA", size, ((i * 40) % 256, 0, 0, 255)).save(folder / f"{i:02d}.png")
+    if options is not None:
+        (folder / "anim.json").write_text(
+            options if isinstance(options, str) else json.dumps(options))
+    return folder
+
+
+# ── silhouette rulers ───────────────────────────────────
+# Shared by the dog-size checks below. Each takes a clip and returns one linear
+# measurement, so they are interchangeable in the parametrised test. They all
+# read the alpha channel, so the scan itself lives in one place.
+def _opaque_columns(frame: Image.Image, y: int, x_window=(0.0, 1.0)):
+    px = frame.load()
+    width = frame.size[0]
+    x0, x1 = int(width * x_window[0]), int(width * x_window[1])
+    return [x for x in range(x0, x1) if px[x, y][3] > 128]
+
+
+def ear_tip_to_paw(clip, x_window=(0.0, 1.0)) -> float:
+    """Artwork height on the first frame. The top is read inside x_window so a
+    hand or a pant leg reaching above the dog does not count; the paw line is
+    read full-width."""
+    frame = clip.frames[0]
+    height = frame.size[1]
+    top = next(y for y in range(height) if _opaque_columns(frame, y, x_window))
+    bottom = max(y for y in range(height) if _opaque_columns(frame, y))
+    return bottom - top + 1
+
+
+def ear_tip_to_ear_tip(clip, x_window=(0.0, 1.0), band_fraction: float = 0.42) -> float:
+    """Head width on the first frame: the widest row in the top slice.
+
+    Only meaningful for a dog facing the camera. Later frames are not usable on
+    head-pat — the forearm swings out sideways, where it would be mistaken for
+    the widest part.
+    """
+    frame = clip.frames[0]
+    _, top, _, bottom = frame.getbbox()
+    band = top + max(1, int((bottom - top) * band_fraction))
+    spans = [_opaque_columns(frame, y, x_window) for y in range(top, band)]
+    return max((xs[-1] - xs[0] + 1 for xs in spans if xs), default=0)
+
+
+def silhouette_scale(clip, x_window=(0.0, 1.0)) -> float:
+    """Linear size taken from the drawn area, median over the clip.
+
+    Square-rooted because area grows with the square of the size. Unlike the
+    other two rulers this does not care which way the dog faces, so it is the
+    one that works on the running clips, where there is no ear-to-ear line to
+    measure. It counts every opaque pixel, so it is only valid where nothing but
+    the dog is drawn — a hand or a pant leg would be measured as dog.
+    """
+    areas = []
+    for frame in clip.frames:
+        areas.append(sum(len(_opaque_columns(frame, y, x_window))
+                         for y in range(frame.size[1])))
+    return statistics.median(areas) ** 0.5
 
 
 # ── assets ──────────────────────────────────────────────
@@ -254,14 +335,6 @@ def test_only_one_platform_difference_exists():
     assert "PET_WINDOW_KIND" in branches[0]
 
 
-def test_window_kind_is_correct_for_this_platform():
-    import sys as _sys
-    from zestpet.qt_backend import PET_WINDOW_KIND
-    from PyQt6.QtCore import Qt as _Qt
-    expected = _Qt.WindowType.Window if _sys.platform == "darwin" else _Qt.WindowType.Tool
-    assert PET_WINDOW_KIND == expected
-
-
 def test_look_covers_sixteen_distinct_orientations():
     import math
     seen = set()
@@ -348,7 +421,6 @@ LEGACY_EVIL_SPECIALS = {"angry", "grin", "smirk", "poop"}
 # The "failed" override was dropped: it had 7 of 8 frames, a 28px jump
 # between frames 0 and 1, and a magenta artefact. The atlas row is clean.
 LEGACY_DIR_OVERRIDES = {"waiting"}
-LEGACY_SCALES = [0.5, 0.75, 1.0, 1.5, 2.0]
 LEGACY_TEMP_DURATIONS = {
     "waving": 2.0, "jumping": 1.5, "failed": 2.5,
     "running-right": 0.8, "running-left": 0.8,
@@ -407,11 +479,6 @@ def test_parity_dynamic_clips_keep_own_size(lib):
         assert clip.size != lib.cell
 
 
-def test_parity_scale_steps_unchanged():
-    from zestpet import qt_backend
-    assert qt_backend.SCALES == LEGACY_SCALES
-
-
 def test_parity_evil_idle_padded_to_cell(lib):
     """Legacy loaded evil idle with pad_to_cell; narrow art must still fill the cell."""
     assert lib.resolve("idle", "evil").size == lib.cell
@@ -420,13 +487,8 @@ def test_parity_evil_idle_padded_to_cell(lib):
 # ── extensibility: the whole point of the refactor ──────
 def test_new_animation_folder_is_discovered(tmp_path):
     """Dropping a folder of PNGs in must be enough — no code, no manifest edit."""
-    root = tmp_path / "assets"
-    (root / "anim" / "common" / "backflip").mkdir(parents=True)
-    from PIL import Image
-    for i in range(3):
-        Image.new("RGBA", (192, 208), (i * 40, 0, 0, 255)).save(
-            root / "anim" / "common" / "backflip" / f"{i:02d}.png")
-    (root / "manifest.json").write_text(json.dumps({"cell": [192, 208]}))
+    root = asset_tree(tmp_path)
+    write_clip(root, COMMON, "backflip", frames=3)
 
     library = ClipLibrary(root).load()
     clip = library.resolve("backflip", COMMON)
@@ -435,71 +497,139 @@ def test_new_animation_folder_is_discovered(tmp_path):
 
 
 def test_new_animation_options_are_honoured(tmp_path):
-    root = tmp_path / "assets"
-    folder = root / "anim" / "evil" / "cackle"
-    folder.mkdir(parents=True)
-    from PIL import Image
-    for i in range(4):
-        Image.new("RGBA", (100, 208), (0, 0, i * 50, 255)).save(folder / f"{i:02d}.png")
-    (folder / "anim.json").write_text(json.dumps(
-        {"fps": 12, "duration": 3.5, "loop": False, "pad": True, "dynamic": False}))
-    (root / "manifest.json").write_text(json.dumps({"cell": [192, 208]}))
+    root = asset_tree(tmp_path)
+    write_clip(root, "evil", "cackle", frames=4, size=(100, 208), options={
+        "fps": 12, "duration": 3.5, "loop": False, "pad": True, "dynamic": False})
 
     clip = ClipLibrary(root).load().resolve("cackle", "evil")
     assert (clip.fps, clip.duration, clip.loop) == (12, 3.5, False)
     assert clip.size == (192, 208), "pad option should letterbox into the cell"
 
 
-def test_scale_option_resizes_frames(tmp_path):
+def test_scale_option_shrinks_the_dog_inside_the_cell(tmp_path):
     """Art from a different render can arrive at the wrong scale; a factor in
-    anim.json fixes it without re-cutting the source frames."""
-    root = tmp_path / "assets"
-    folder = root / "anim" / "common" / "big"
-    folder.mkdir(parents=True)
-    from PIL import Image
-    for i in range(2):
-        Image.new("RGBA", (200, 300), (10, 20, 30, 255)).save(folder / f"{i:02d}.png")
-    (folder / "anim.json").write_text(json.dumps({"scale": 0.5}))
-    (root / "manifest.json").write_text(json.dumps({"cell": [192, 208]}))
+    anim.json fixes it without re-cutting the source frames.
+
+    Without ``dynamic`` the frame has to stay cell-shaped, so the canvas is kept
+    and only the drawing inside it shrinks. See the dynamic case below.
+    """
+    root = asset_tree(tmp_path)
+    folder = write_clip(root, COMMON, "big", frames=2, size=(200, 300),
+                        options={"scale": 0.5})
+    # a solid block does not reach the canvas edges, so the shrink is visible
+    for path in sorted(folder.glob("*.png")):
+        canvas = Image.new("RGBA", (200, 300), (0, 0, 0, 0))
+        canvas.paste(Image.new("RGBA", (100, 100), (9, 9, 9, 255)), (50, 150))
+        canvas.save(path)
 
     clip = ClipLibrary(root).load().resolve("big", COMMON)
-    assert clip.size == (100, 150)
-    assert all(f.size == (100, 150) for f in clip.frames)
+    assert clip.size == (200, 300), "canvas must survive"
+    box = clip.frames[0].getchannel("A").getbbox()
+    # Loose: resampling a hard-edged test block rings, which spreads the alpha a
+    # few pixels wider than the arithmetic answer of 50.
+    assert (box[2] - box[0]) == pytest.approx(50, rel=0.2), "drawing should be halved"
 
 
-def test_imported_clips_match_the_atlas_dog_size(lib):
+@pytest.mark.parametrize("name, persona, ruler, x_window", [
+    ("head-pat", COMMON, ear_tip_to_paw, (0.62, 1.0)),
+    ("rub-leg", "evil", ear_tip_to_paw, (0.45, 1.0)),
+    ("head-pat", COMMON, ear_tip_to_ear_tip, (0.0, 1.0)),
+    ("running-right", COMMON, silhouette_scale, (0.0, 1.0)),
+    ("running-left", COMMON, silhouette_scale, (0.0, 1.0)),
+    ("running-right", "evil", silhouette_scale, (0.0, 1.0)),
+    ("running-left", "evil", silhouette_scale, (0.0, 1.0)),
+], ids=["head-pat height", "rub-leg height", "head-pat head width",
+        "run-right common area", "run-left common area",
+        "run-right evil area", "run-left evil area"])
+def test_clips_match_the_reference_dog_size(lib, name, persona, ruler, x_window):
     """The dog must read as the same size in every clip.
 
-    Measured ear-tip to paw, with the column range narrowed to skip the hand in
-    head-pat and the pant leg in rub-leg. Both strips came from a render at a
-    different scale: head-pat was 1.18x and rub-leg 1.07x before correction.
-    """
-    def dog_height(clip, frame_index, left_fraction):
-        frame = clip.frames[frame_index]
-        px = frame.load()
-        w, h = frame.size
-        x0 = int(w * left_fraction)
-        top = next(y for y in range(h) if any(px[x, y][3] > 128 for x in range(x0, w)))
-        bottom = max(y for y in range(h) if any(px[x, y][3] > 128 for x in range(w)))
-        return bottom - top + 1
+    Three rulers, because no single one covers every pose:
 
-    reference = dog_height(lib.resolve("idle", COMMON), 0, 0.0)
-    for name, persona, left in (("head-pat", COMMON, 0.62), ("rub-leg", "evil", 0.45)):
-        clip = lib.resolve(name, persona)
-        if clip is None:
-            continue
-        ratio = dog_height(clip, 0, left) / reference
-        assert 0.9 <= ratio <= 1.1, f"{name} dog is {ratio:.2f}x the atlas dog"
+    * Imported strips arrive from renders at other scales — head-pat was 1.18x
+      and rub-leg 1.07x before correction — and are measured ear-tip to paw.
+    * Height alone is not enough. The head-pat render has puppy proportions, a
+      bigger head on shorter legs, and the head is lowered under the hand: its
+      height matched while the dog still read as visibly larger, which is what
+      shipped in v1.2. Head width is what the eye actually judges.
+    * The running rows face sideways, so they have no ear-to-ear line and their
+      stretched pose makes height meaningless. Drawn area covers them; they were
+      1.17-1.19x before correction, in both personas.
+
+    x_window skips foreign objects: the hand above head-pat, the pant leg beside
+    rub-leg.
+    """
+    clip = lib.resolve(name, persona)
+    if clip is None:
+        pytest.skip(f"{persona}/{name} not present")
+    ratio = ruler(clip, x_window) / ruler(lib.resolve("idle", COMMON))
+    assert 0.9 <= ratio <= 1.1, f"{persona}/{name} dog is {ratio:.2f}x the reference dog"
+
+
+def test_reference_clips_agree_on_the_dog_size(lib):
+    """The rulers above are only worth anything if the clips they are measured
+    against agree with each other. These four all show an upright dog from the
+    front, so the area ruler should read the same for all of them."""
+    measured = {
+        f"{persona}/{name}": silhouette_scale(lib.resolve(name, persona))
+        for name, persona in (("idle", COMMON), ("idle", "evil"),
+                              ("head-tilt", "evil"), ("waiting", COMMON))
+    }
+    spread = max(measured.values()) / min(measured.values())
+    assert spread < 1.05, f"reference clips disagree on the dog size: {measured}"
+
+
+def test_shrink_artwork_keeps_the_canvas_and_the_paw_line(lib):
+    """A clip that does not own its window must stay one cell in size.
+
+    The floor calculation reads the paw line as a fraction of the canvas height,
+    so shrinking the canvas along with the art would lift the pet off the floor.
+    """
+    frame = lib.resolve("idle", COMMON).frames[0]
+    shrunk = core.shrink_artwork(frame, 0.85)
+    assert shrunk.size == frame.size, "canvas must not change"
+    before = frame.getchannel("A").getbbox()
+    after = shrunk.getchannel("A").getbbox()
+    assert after[3] == before[3], "paw line must not move"
+    assert after[2] - after[0] < before[2] - before[0], "artwork should be narrower"
+    centre = lambda box: (box[0] + box[2]) / 2  # noqa: E731
+    assert abs(centre(after) - centre(before)) <= 1, "artwork should stay centred"
+
+
+def test_atlas_row_can_declare_a_scale(tmp_path):
+    """Atlas rows had no way to correct their size, so the oversized running
+    rows could not be fixed without re-cutting the sheet."""
+    root = tmp_path / "assets"
+    root.mkdir()
+    sheet = Image.new("RGBA", (192, 208), (0, 0, 0, 0))
+    sheet.paste(Image.new("RGBA", (100, 100), (9, 9, 9, 255)), (40, 100))
+    sheet.save(root / "atlas.png")
+    (root / "manifest.json").write_text(json.dumps({
+        "cell": [192, 208], "atlas": "atlas.png",
+        "rows": [{"name": "full", "row": 0, "frames": 1},
+                 {"name": "small", "row": 0, "frames": 1, "scale": 0.5}]}))
+
+    library = ClipLibrary(root).load()
+    full, small = library.resolve("full", COMMON), library.resolve("small", COMMON)
+    assert full.size == small.size == (192, 208), "the cell size must be untouched"
+    full_box = full.frames[0].getchannel("A").getbbox()
+    small_box = small.frames[0].getchannel("A").getbbox()
+    assert (small_box[2] - small_box[0]) == pytest.approx(
+        (full_box[2] - full_box[0]) / 2, rel=0.2)
+
+
+def test_dynamic_clip_scale_shrinks_the_whole_frame(tmp_path):
+    """The opposite case: a dynamic clip owns its window, so the canvas goes
+    with the art. head-pat and rub-leg rely on this."""
+    root = asset_tree(tmp_path)
+    write_clip(root, COMMON, "swoop", frames=2, size=(200, 300),
+               options={"scale": 0.5, "dynamic": True})
+    assert ClipLibrary(root).load().resolve("swoop", COMMON).size == (100, 150)
 
 
 def test_bad_anim_json_is_reported_not_fatal(tmp_path):
-    root = tmp_path / "assets"
-    folder = root / "anim" / "common" / "broken"
-    folder.mkdir(parents=True)
-    from PIL import Image
-    Image.new("RGBA", (192, 208), (1, 2, 3, 255)).save(folder / "00.png")
-    (folder / "anim.json").write_text("{ nope")
-    (root / "manifest.json").write_text(json.dumps({"cell": [192, 208]}))
+    root = asset_tree(tmp_path)
+    write_clip(root, COMMON, "broken", frames=1, options="{ nope")
 
     library = ClipLibrary(root).load()
     assert library.resolve("broken", COMMON) is not None

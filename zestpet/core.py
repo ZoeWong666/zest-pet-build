@@ -100,6 +100,47 @@ def pad_to_cell(img: Image.Image, cell: Tuple[int, int]) -> Image.Image:
     return canvas
 
 
+def resize_frame(img: Image.Image, factor: float) -> Image.Image:
+    """Scale a whole frame, canvas included. For clips that own their window."""
+    return img.resize((max(1, round(img.size[0] * factor)),
+                       max(1, round(img.size[1] * factor))), Image.LANCZOS)
+
+
+def shrink_artwork(img: Image.Image, factor: float) -> Image.Image:
+    """Scale the drawing down but keep the canvas exactly as it was.
+
+    Needed because a clip that does not own its window — an atlas row, or a
+    folder without ``dynamic`` — is expected to be one cell in size. Resizing
+    such a frame outright would leave the art smaller than the window and throw
+    off the floor calculation, which reads the paw line as a fraction of the
+    canvas height.
+
+    The drawing keeps its place: the paw line and the horizontal centre of the
+    artwork stay where they were, so only the dog's size changes.
+
+    Positions come from the alpha channel alone. ``Image.getbbox`` on an RGBA
+    image also counts pixels that are fully transparent but carry leftover
+    colour, and resampling spreads colour further than alpha, so the plain
+    bounding box would shift the art by a pixel or two.
+    """
+    box = img.getchannel("A").getbbox()
+    if box is None:
+        return img
+    smaller = resize_frame(img, factor)
+    small_box = smaller.getchannel("A").getbbox()
+    canvas = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    if small_box is None:
+        return canvas
+    dx = round((box[0] + box[2]) / 2 - (small_box[0] + small_box[2]) / 2)
+    dy = box[3] - small_box[3]
+    # Pasted without a mask: the canvas is empty, so the alpha band should be
+    # copied across as-is. Passing the image as its own mask would blend it
+    # against the transparent canvas and square the alpha, which rounds the
+    # faintest edge pixels away to nothing and pulls the paw line up.
+    canvas.paste(smaller, (dx, dy))
+    return canvas
+
+
 WHITE_KEY_THRESHOLD = 230
 
 
@@ -206,13 +247,20 @@ class ClipLibrary:
         cw, ch = self.cell
         for row in manifest.get("rows", []):
             name, r = row["name"], row["row"]
+            # Rows are not all drawn at the same size — the running rows put a
+            # noticeably larger dog in the cell than the standing ones — so a row
+            # may declare a correction, same as an anim.json may.
+            factor = row.get("scale")
             frames = []
             for col in range(row.get("frames", 0)):
                 left, top = col * cw, r * ch
                 if left + cw > sheet.size[0] or top + ch > sheet.size[1]:
                     self.warnings.append(f"atlas row '{name}' frame {col} out of bounds")
                     break
-                frames.append(drop_key_residue(sheet.crop((left, top, left + cw, top + ch)).copy()))
+                cell = sheet.crop((left, top, left + cw, top + ch)).copy()
+                if factor and factor != 1:
+                    cell = shrink_artwork(cell, factor)
+                frames.append(drop_key_residue(cell))
             if frames:
                 self._put(Clip(
                     name=name, frames=frames, fps=row.get("fps", DEFAULT_FPS),
@@ -255,10 +303,14 @@ class ClipLibrary:
             # than re-cutting the frames, declare a factor in anim.json and
             # resize here, so the source files stay untouched and the number is
             # easy to tweak.
+            #
+            # A dynamic clip owns its window, so the whole frame shrinks with the
+            # art. Anything else has to stay one cell in size, so only the
+            # drawing inside the canvas shrinks.
             factor = options.get("scale")
             if factor and factor != 1:
-                img = img.resize((max(1, round(img.size[0] * factor)),
-                                  max(1, round(img.size[1] * factor))), Image.LANCZOS)
+                img = (resize_frame(img, factor) if options.get("dynamic")
+                       else shrink_artwork(img, factor))
             if options.get("pad"):
                 img = pad_to_cell(img, self.cell)
             # Last, so nothing downstream can resample the key colour back in.

@@ -241,6 +241,29 @@ class PetWindow(QWidget):
             self.move(self.x(), new_y)
         return True
 
+    def _pick_wander_target(self, area, span: int) -> Optional[int]:
+        """A random x at least MIN_WANDER_DISTANCE away, or None if there is none.
+
+        The reachable stretch is the screen minus the pet's own width; the part
+        worth walking to is that stretch with a MIN_WANDER_DISTANCE hole punched
+        around the current position. Draw uniformly across what is left of it, so
+        a target is always found when one exists and every reachable spot stays
+        equally likely.
+        """
+        low, high = area.x(), area.x() + span
+        ranges = [(lo, hi) for lo, hi in ((low, self.x() - MIN_WANDER_DISTANCE),
+                                         (self.x() + MIN_WANDER_DISTANCE, high))
+                  if lo <= hi]
+        if not ranges:
+            return None
+        pick = random.randint(0, sum(hi - lo + 1 for lo, hi in ranges) - 1)
+        for lo, hi in ranges:
+            width = hi - lo + 1
+            if pick < width:
+                return lo + pick
+            pick -= width
+        return None  # unreachable: pick is always inside one of the ranges
+
     def _step_wander(self) -> bool:
         """Stroll to a random spot along the current screen after a quiet spell."""
         if self.state.busy or self._dragging or self._fall_velocity is not None:
@@ -256,17 +279,16 @@ class PetWindow(QWidget):
             span = max(0, area.width() - self.width())
             if span < MIN_WANDER_DISTANCE:
                 return False  # screen too narrow to walk anywhere worth going
-            # Retry instead of giving up on the first close pick. Bailing out
-            # also reset the idle timer, so on a narrow screen a run of nearby
-            # picks stalled wandering for another IDLE_BEFORE_WANDER each time.
-            for _ in range(8):
-                candidate = area.x() + random.randint(0, span)
-                if abs(candidate - self.x()) >= MIN_WANDER_DISTANCE:
-                    self._wander_target = candidate
-                    break
-            else:
-                self._last_interaction = now
+            # Pick straight out of the range that is actually far enough away,
+            # rather than guessing and rejecting. Rejection sampling stalled
+            # wandering on a narrow screen: with only a third of the screen far
+            # enough to be worth walking to, a run of close picks was likely
+            # enough to happen, and giving up also reset the idle timer, which
+            # cost another IDLE_BEFORE_WANDER before the next attempt.
+            target = self._pick_wander_target(area, span)
+            if target is None:
                 return False
+            self._wander_target = target
         direction = 1 if self._wander_target > self.x() else -1
         self.state.play("running-right" if direction > 0 else "running-left")
         step = max(1, int(WANDER_SPEED * self._timer.interval() / 1000.0))

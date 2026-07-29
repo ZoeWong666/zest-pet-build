@@ -362,6 +362,50 @@ def test_wander_starts_only_after_a_quiet_spell(window):
     assert window.state.clip.name in ("running-left", "running-right")
 
 
+def test_wander_target_is_always_found_when_one_exists(window, monkeypatch):
+    """Target picking must not be a gamble.
+
+    The old code guessed a spot and retried up to eight times, then gave up and
+    reset the idle timer — which cost another IDLE_BEFORE_WANDER before the next
+    attempt. On a narrow screen only about a third of the width is far enough
+    away to be worth walking to, so eight straight rejections happened often
+    enough to stall wandering outright, roughly one run in fifty.
+
+    Sweep every start position on a narrow screen and require a valid target
+    every time there is one, rather than trusting a sample to catch it.
+    """
+    from PyQt6.QtCore import QRect
+    from zestpet.qt_backend import MIN_WANDER_DISTANCE
+    span = 60
+    area = QRect(0, 0, window.width() + span, 400)
+    for start_x in range(0, span + 1):
+        window.move(start_x, window.y())
+        reachable = [x for x in range(0, span + 1)
+                     if abs(x - start_x) >= MIN_WANDER_DISTANCE]
+        target = window._pick_wander_target(area, span)
+        if not reachable:
+            assert target is None, f"nowhere to go from {start_x}, got {target}"
+            continue
+        assert target in reachable, f"from {start_x} picked {target}, valid: {reachable}"
+
+
+def test_wander_giving_up_does_not_delay_the_next_attempt(window, monkeypatch):
+    """Standing where nothing is far enough away must not push the idle timer
+    out — otherwise the pet goes quiet for another IDLE_BEFORE_WANDER for a
+    reason that has nothing to do with the user."""
+    from PyQt6.QtCore import QRect
+    from zestpet.qt_backend import IDLE_BEFORE_WANDER, MIN_WANDER_DISTANCE
+    span = MIN_WANDER_DISTANCE + 10  # wide enough to try, too narrow to succeed
+    area = QRect(0, 0, window.width() + span, 400)
+    monkeypatch.setattr(window, "_current_screen_geometry", lambda: area)
+    window.config["wander"] = True
+    window.move(span // 2, window.y())  # dead centre: both sides too close
+    window._last_interaction -= IDLE_BEFORE_WANDER + 1
+    before = window._last_interaction
+    assert window._step_wander() is False
+    assert window._last_interaction == before, "idle timer must not be pushed out"
+
+
 def test_wander_works_on_a_narrow_screen(window, monkeypatch):
     """A run of nearby random picks used to stall wandering: each rejection also
     reset the idle timer, costing another IDLE_BEFORE_WANDER. Seen as a CI
@@ -527,6 +571,12 @@ def test_menu_exposes_evil_specials_only_in_evil_mode(window, library, monkeypat
     for special in library.persona_only("evil"):
         assert special not in normal_labels
         assert special in evil_labels
+
+
+def test_scale_steps_match_the_pre_refactor_build():
+    """Parity check. Lived in test_core.py, which is meant to import no GUI
+    toolkit — reading qt_backend.SCALES pulls in PyQt6, so it belongs here."""
+    assert SCALES == [0.5, 0.75, 1.0, 1.5, 2.0]
 
 
 def test_menu_has_all_scale_steps(window, monkeypatch):

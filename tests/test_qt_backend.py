@@ -337,6 +337,39 @@ def test_wander_starts_only_after_a_quiet_spell(window):
     assert window.state.clip.name in ("running-left", "running-right")
 
 
+def test_wander_works_on_a_narrow_screen(window, monkeypatch):
+    """A run of nearby random picks used to stall wandering: each rejection also
+    reset the idle timer, costing another IDLE_BEFORE_WANDER. Seen as a CI
+    failure on a small offscreen canvas."""
+    from PyQt6.QtCore import QRect
+    from zestpet.qt_backend import IDLE_BEFORE_WANDER
+    narrow = QRect(0, 0, window.width() + 60, 400)
+    monkeypatch.setattr(window, "_current_screen_geometry", lambda: narrow)
+    window.config["wander"] = True
+    window.move(narrow.x(), window.y())
+    window._last_interaction -= IDLE_BEFORE_WANDER + 1
+    start_x = window.x()
+    for _ in range(400):
+        window.tick()
+        if window.x() != start_x:
+            break
+    assert window.x() != start_x, "pet never wandered on a narrow screen"
+
+
+def test_wander_skips_screens_too_narrow_to_walk(window, monkeypatch):
+    from PyQt6.QtCore import QRect
+    from zestpet.qt_backend import IDLE_BEFORE_WANDER, MIN_WANDER_DISTANCE
+    tiny = QRect(0, 0, window.width() + MIN_WANDER_DISTANCE - 10, 400)
+    monkeypatch.setattr(window, "_current_screen_geometry", lambda: tiny)
+    window.config["wander"] = True
+    window.move(tiny.x(), window.y())
+    window._last_interaction -= IDLE_BEFORE_WANDER + 1
+    start_x = window.x()
+    for _ in range(200):
+        window.tick()
+    assert window.x() == start_x
+
+
 def test_wander_respects_the_disable_flag(window):
     from zestpet.qt_backend import IDLE_BEFORE_WANDER
     window.config["wander"] = False

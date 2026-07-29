@@ -24,6 +24,7 @@ CLICK_MAX_SECONDS = 0.3
 LOOK_POLL_MS = 100
 IDLE_BEFORE_WANDER = 12.0
 WANDER_SPEED = 55.0  # px/sec
+MIN_WANDER_DISTANCE = 40  # don't bother strolling less than this
 GRAVITY = 1400.0  # px/sec^2
 FLOOR_MARGIN = 8
 PERSONA_LABEL = {COMMON: "🐶 Normal", "evil": "😈 Evil"}
@@ -224,12 +225,20 @@ class PetWindow(QWidget):
                 return False
             if now - self._last_interaction < IDLE_BEFORE_WANDER:
                 return False
-            span = max(80, area.width() - self.width())
-            target = area.x() + random.randint(0, span)
-            if abs(target - self.x()) < 40:  # too close to bother; try again later
+            span = max(0, area.width() - self.width())
+            if span < MIN_WANDER_DISTANCE:
+                return False  # screen too narrow to walk anywhere worth going
+            # Retry instead of giving up on the first close pick. Bailing out
+            # also reset the idle timer, so on a narrow screen a run of nearby
+            # picks stalled wandering for another IDLE_BEFORE_WANDER each time.
+            for _ in range(8):
+                candidate = area.x() + random.randint(0, span)
+                if abs(candidate - self.x()) >= MIN_WANDER_DISTANCE:
+                    self._wander_target = candidate
+                    break
+            else:
                 self._last_interaction = now
                 return False
-            self._wander_target = target
         direction = 1 if self._wander_target > self.x() else -1
         self.state.play("running-right" if direction > 0 else "running-left")
         step = max(1, int(WANDER_SPEED * self._timer.interval() / 1000.0))

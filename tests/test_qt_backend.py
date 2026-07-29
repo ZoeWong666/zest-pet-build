@@ -393,6 +393,32 @@ def test_look_does_not_interrupt_a_deliberate_action(window):
 
 
 # ── menu ────────────────────────────────────────────────
+def test_right_press_does_not_open_the_menu(window, monkeypatch):
+    """QMenu.exec() grabs the mouse, so opening on press meant the following
+    right-button release dismissed it at once. On Windows that made the menu
+    appear not to open at all."""
+    opened = []
+    monkeypatch.setattr("PyQt6.QtWidgets.QMenu.exec", lambda self, *a: opened.append(self))
+    window.on_press(FakeMouseEvent(button=Qt.MouseButton.RightButton))
+    assert opened == [], "menu must not open on right-button press"
+
+
+def test_right_release_opens_the_menu(window, monkeypatch):
+    opened = []
+    monkeypatch.setattr("PyQt6.QtWidgets.QMenu.exec", lambda self, *a: opened.append(self))
+    window.on_press(FakeMouseEvent(button=Qt.MouseButton.RightButton))
+    window.on_release(FakeMouseEvent(button=Qt.MouseButton.RightButton))
+    assert len(opened) == 1, "right-button release should open exactly one menu"
+
+
+def test_right_click_does_not_disturb_the_animation(window, monkeypatch):
+    monkeypatch.setattr("PyQt6.QtWidgets.QMenu.exec", lambda self, *a: None)
+    window.state.play("idle")
+    window.on_press(FakeMouseEvent(button=Qt.MouseButton.RightButton))
+    window.on_release(FakeMouseEvent(button=Qt.MouseButton.RightButton))
+    assert window.state.clip.name == "idle", "right-click should not trigger the wave"
+
+
 def test_menu_row_order_is_mode_props_size_then_actions(window, library, monkeypatch):
     """Fixed layout: 1st row mode, 2nd props, 3rd size, 4th row onwards actions."""
     captured = []

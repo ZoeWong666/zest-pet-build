@@ -285,8 +285,12 @@ class PetWindow(QWidget):
 
     def on_press(self, event) -> None:
         if event.button() == Qt.MouseButton.RightButton:
+            # The menu is opened on release, not here. QMenu.exec() takes a
+            # mouse grab, so the right-button release that follows a press is
+            # delivered to the open menu and dismissed it immediately. macOS
+            # native menu tracking swallows that release; Windows does not, so
+            # the menu only flashed and looked like nothing happened.
             self._log_event("right-press")
-            self.show_menu(event.globalPosition().toPoint())
             return
         if event.button() != Qt.MouseButton.LeftButton:
             return
@@ -323,6 +327,10 @@ class PetWindow(QWidget):
         self.render()
 
     def on_release(self, event) -> None:
+        if event.button() == Qt.MouseButton.RightButton:
+            self._log_event("right-release/menu")
+            self.show_menu(event.globalPosition().toPoint())
+            return
         if event.button() != Qt.MouseButton.LeftButton:
             return
         self._last_interaction = time.perf_counter()

@@ -91,6 +91,12 @@ not by dividing the width evenly: strips are rarely evenly spaced, and small
 detached pieces such as motion lines get merged back into their own frame.
 `--frames` makes the tool refuse to write if it disagrees with you.
 
+`--align feet` (the default) lines the frames up on the character's feet.
+Use `--align left` when the leftmost thing in the frame is the fixed part of
+the scene. Getting this wrong is visible: the head-pat strip has the hand
+reaching different distances each frame, so aligning on the frame edge slid
+the dog 19px sideways during playback.
+
 Use `--dynamic` when the art is a different shape from the 192x208 cell (the
 leg-rubbing strip is 184x268); the window then takes the art's own size and
 keeps its bottom edge fixed, so the pet's feet stay on the floor. Use `--pad`
@@ -119,6 +125,12 @@ assets/
 Props are drawn behind the pet, anchored to the bottom. Near-white pixels are
 keyed to transparent on load, so art on a white background works as-is.
 
+The art is rendered on magenta, and both the atlas and the frame folders keep a
+one-pixel magenta rim from that key. Strongly magenta pixels are made
+transparent at load time — the palette is black, tan, yellow, grey-blue and
+cream, so nothing here is legitimately magenta. A test fails if residue
+reappears.
+
 `manifest.json` only exists because the atlas is one packed image and its rows
 can't be discovered from the filesystem. Loose animation folders need no entry.
 
@@ -134,7 +146,7 @@ two-row) at the right cell size for drawing new frames, plus
 zestpet/core.py        assets, animation clips, state machine — no GUI imports
 zestpet/qt_backend.py  window, rendering, input, menu, tray
 main.py                entry point
-tests/                 85 tests, no display required
+tests/                 91 tests, no display required
 tools/import_strip.py  turn a chroma-keyed sprite strip into an animation
 ```
 

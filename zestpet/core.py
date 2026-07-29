@@ -97,6 +97,27 @@ def pad_to_cell(img: Image.Image, cell: Tuple[int, int]) -> Image.Image:
 WHITE_KEY_THRESHOLD = 230
 
 
+def drop_key_residue(img: Image.Image) -> Image.Image:
+    """Make leftover chroma-key pixels transparent.
+
+    The art is rendered on magenta and keyed by whoever produced it, which
+    leaves a one-pixel magenta rim on silhouettes — present in the atlas as
+    well as in the frame folders. Zest's palette is black, tan, yellow,
+    grey-blue and cream, so a strongly magenta pixel (red and blue high, green
+    low) is always residue. Tan and yellow carry too much green to match, and
+    black is too dark.
+
+    Done at load time so it covers every source, including art added later.
+    Vectorised through channel ops; a per-pixel loop would cost far more.
+    """
+    r, g, b, a = img.split()
+    high = lambda v: 255 if v > 110 else 0  # noqa: E731
+    low = lambda v: 255 if v < 70 else 0  # noqa: E731
+    mask = ImageChops.darker(ImageChops.darker(r.point(high), b.point(high)), g.point(low))
+    img.putalpha(ImageChops.subtract(a, mask))
+    return img
+
+
 def drop_white_background(img: Image.Image) -> Image.Image:
     """Make near-white pixels transparent so props drop in without an alpha channel.
 
@@ -177,7 +198,7 @@ class ClipLibrary:
                 if left + cw > sheet.size[0] or top + ch > sheet.size[1]:
                     self.warnings.append(f"atlas row '{name}' frame {col} out of bounds")
                     break
-                frames.append(sheet.crop((left, top, left + cw, top + ch)).copy())
+                frames.append(drop_key_residue(sheet.crop((left, top, left + cw, top + ch)).copy()))
             if frames:
                 self._put(Clip(
                     name=name, frames=frames, fps=row.get("fps", DEFAULT_FPS),
@@ -215,7 +236,7 @@ class ClipLibrary:
         frames = []
         for p in paths:
             img = Image.open(p)
-            img = img.convert("RGBA") if img.mode != "RGBA" else img.copy()
+            img = drop_key_residue(img.convert("RGBA") if img.mode != "RGBA" else img.copy())
             if options.get("pad"):
                 img = pad_to_cell(img, self.cell)
             frames.append(img)

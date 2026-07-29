@@ -127,6 +127,29 @@ def vertical_extent(alpha: Image.Image) -> Tuple[int, int]:
     return box[1], box[3]
 
 
+def anchor_offset(frame: Image.Image, mode: str) -> int:
+    """How far from the frame's left edge the alignment anchor sits.
+
+    ``left`` anchors on the frame's own left edge, which is right when the
+    leftmost thing is the fixed part of the scene (a pant leg, a wall).
+
+    ``feet`` anchors on the leftmost opaque pixel in the bottom band, i.e. the
+    character's feet. Needed when the moving part sticks out furthest: in the
+    head-pat strip the hand reaches different distances each frame, so aligning
+    on the frame edge slid the dog ~19px sideways during playback.
+    """
+    if mode == "left":
+        return 0
+    w, h = frame.size
+    band = max(4, h // 4)
+    px = frame.load()
+    for x in range(w):
+        for y in range(h - band, h):
+            if px[x, y][3] > 128:
+                return x
+    return 0
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("image")
@@ -134,6 +157,9 @@ def main() -> None:
     ap.add_argument("--frames", type=int, default=None, help="expected count; refuses to write on mismatch")
     ap.add_argument("--fps", type=int, default=8)
     ap.add_argument("--duration", type=float, default=None)
+    ap.add_argument("--align", choices=("feet", "left"), default="feet",
+                    help="feet: line the character's feet up (default). "
+                         "left: line the frames' left edges up.")
     ap.add_argument("--dynamic", action="store_true", help="let the window take this art's own size")
     ap.add_argument("--pad", action="store_true", help="letterbox into the 192x208 cell instead")
     ap.add_argument("--dry-run", action="store_true")
@@ -162,10 +188,16 @@ def main() -> None:
         raise SystemExit(f"expected {args.frames} frames but found {len(spans)} — "
                          f"adjust GAP_MERGE or check the strip")
 
-    # One canvas for every frame, anchored bottom-left so whatever is fixed in
-    # the scene stays fixed.
-    cell_w = max(b - a + 1 for a, b in spans)
+    # Crop every frame, then line them up on one canvas so the anchor lands at
+    # the same place in each. Vertical alignment shares one top/bottom crop, so
+    # the ground never moves.
+    crops = [rgba.crop((a, top, b + 1, bottom)) for a, b in spans]
+    anchors = [anchor_offset(c, args.align) for c in crops]
+    shift = max(anchors)
+    offsets = [shift - anchor for anchor in anchors]
+    cell_w = max(off + c.size[0] for off, c in zip(offsets, crops))
     cell_h = bottom - top
+    print(f"alignment       : {args.align} (anchors at {anchors}, shifts {offsets})")
     print(f"output cell     : {cell_w}x{cell_h}")
 
     out_dir = ASSETS / "anim" / mode / name
@@ -177,10 +209,9 @@ def main() -> None:
     for old in out_dir.glob("*.png"):
         old.unlink()
 
-    for i, (a, b) in enumerate(spans):
-        frame = rgba.crop((a, top, b + 1, bottom))
+    for i, (crop, off) in enumerate(zip(crops, offsets)):
         canvas = Image.new("RGBA", (cell_w, cell_h), (0, 0, 0, 0))
-        canvas.paste(frame, (0, cell_h - frame.size[1]), frame)
+        canvas.paste(crop, (off, cell_h - crop.size[1]), crop)
         if args.pad:
             from zestpet.core import pad_to_cell
             canvas = pad_to_cell(canvas, (192, 208))

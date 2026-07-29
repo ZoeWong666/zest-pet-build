@@ -43,6 +43,26 @@ def test_every_frame_is_rgba_and_not_blank(lib):
             assert frame.getbbox() is not None, f"{clip.persona}/{clip.name}[{i}] is fully blank"
 
 
+def test_no_chroma_key_residue(lib):
+    """The art is rendered on magenta. Any strongly magenta pixel left behind is
+    key residue showing as a rim around the silhouette — the palette is black,
+    tan, yellow, grey-blue and cream, so nothing here is legitimately magenta."""
+    offenders = {}
+    for clip in lib._clips.values():
+        count = 0
+        for frame in clip.frames:
+            px = frame.load()
+            w, h = frame.size
+            for y in range(0, h, 2):
+                for x in range(0, w, 2):
+                    r, g, b, a = px[x, y]
+                    if a > 128 and r > 110 and b > 110 and g < 70:
+                        count += 1
+        if count > 20:  # a handful of sampled pixels is dark fur, not a rim
+            offenders[f"{clip.persona}/{clip.name}"] = count
+    assert not offenders, f"chroma-key residue left: {offenders}"
+
+
 def test_manifest_rows_all_loaded(lib):
     manifest = json.loads((core.asset_root() / "manifest.json").read_text())
     for row in manifest["rows"]:
@@ -72,9 +92,9 @@ def test_persona_only_clips_are_not_reachable_from_normal(lib):
 
 def test_directory_clip_inherits_atlas_timing(lib):
     """An override folder should only need frames, not a repeat of the timing."""
-    failed = lib.resolve("failed", COMMON)
-    assert failed.source == "dir"
-    assert failed.fps == 5 and failed.duration == 2.5  # from the manifest row
+    waiting = lib.resolve("waiting", COMMON)
+    assert waiting.source == "dir"
+    assert waiting.fps == 4  # from the manifest row, not from an anim.json
 
 
 # ── frame pacing ────────────────────────────────────────
@@ -194,6 +214,24 @@ def test_next_wake_stays_within_frame_interval(lib):
 
 
 # ── look direction ──────────────────────────────────────
+def test_look_clips_are_never_overridden(lib):
+    """The look rows are 16 head orientations, not decoration.
+
+    An evil/look-A folder used to shadow them with eight forward-facing
+    expression frames, which silently broke cursor-watching in Evil mode: the
+    pet changed expression instead of turning its head. Any persona override of
+    these clips is a bug, so they must always resolve to the atlas.
+    """
+    for persona in lib.personas():
+        for name in core.LOOK_CLIPS:
+            clip = lib.resolve(name, persona)
+            assert clip is not None, f"{persona} lost {name}"
+            assert clip.source == "atlas", (
+                f"{persona}/{name} is overridden by a folder; directional look "
+                f"needs the atlas frames")
+            assert clip.frame_count == core.LOOK_STEPS // len(core.LOOK_CLIPS)
+
+
 def test_look_covers_sixteen_distinct_orientations():
     import math
     seen = set()
@@ -271,9 +309,15 @@ LEGACY_ATLAS_STATES = [
     "idle", "running-right", "running-left", "waving", "jumping",
     "failed", "waiting", "running", "review", "look-A", "look-B",
 ]
-LEGACY_EVIL_OVERRIDES = {"idle", "running-right", "running-left", "look-A"}
+# "look-A" was in this set, but the evil folder held forward-facing expression
+# frames rather than head orientations, which broke cursor-watching in Evil
+# mode. That art is now the separate "taunt" clip and look-A falls back to the
+# atlas. See test_look_clips_are_never_overridden.
+LEGACY_EVIL_OVERRIDES = {"idle", "running-right", "running-left"}
 LEGACY_EVIL_SPECIALS = {"angry", "grin", "smirk", "poop"}
-LEGACY_DIR_OVERRIDES = {"waiting", "failed"}
+# The "failed" override was dropped: it had 7 of 8 frames, a 28px jump
+# between frames 0 and 1, and a magenta artefact. The atlas row is clean.
+LEGACY_DIR_OVERRIDES = {"waiting"}
 LEGACY_SCALES = [0.5, 0.75, 1.0, 1.5, 2.0]
 LEGACY_TEMP_DURATIONS = {
     "waving": 2.0, "jumping": 1.5, "failed": 2.5,
@@ -293,6 +337,13 @@ def test_parity_evil_overrides_present(lib):
     for name in LEGACY_EVIL_OVERRIDES:
         clip = lib.resolve(name, "evil")
         assert clip.persona == "evil", f"evil no longer overrides {name}"
+
+
+def test_evil_expression_frames_kept_as_their_own_clip(lib):
+    """The art that used to shadow look-A is still reachable, just renamed."""
+    taunt = lib.resolve("taunt", "evil")
+    assert taunt is not None and taunt.frame_count == 8
+    assert lib.resolve("taunt", COMMON) is None
 
 
 def test_parity_evil_specials_present(lib):

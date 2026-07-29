@@ -114,8 +114,16 @@ def drop_key_residue(img: Image.Image) -> Image.Image:
     high = lambda v: 255 if v > 110 else 0  # noqa: E731
     low = lambda v: 255 if v < 70 else 0  # noqa: E731
     mask = ImageChops.darker(ImageChops.darker(r.point(high), b.point(high)), g.point(low))
-    img.putalpha(ImageChops.subtract(a, mask))
-    return img
+    # Clearing alpha alone is not enough: the magenta stays in the RGB channels,
+    # and any later resampling (a scale factor, a size change) blends it back in
+    # around the edges. Zero the colour too.
+    cleared = Image.merge("RGBA", (
+        ImageChops.subtract(r, mask),
+        ImageChops.subtract(g, mask),
+        ImageChops.subtract(b, mask),
+        ImageChops.subtract(a, mask),
+    ))
+    return cleared
 
 
 def drop_white_background(img: Image.Image) -> Image.Image:
@@ -236,10 +244,19 @@ class ClipLibrary:
         frames = []
         for p in paths:
             img = Image.open(p)
-            img = drop_key_residue(img.convert("RGBA") if img.mode != "RGBA" else img.copy())
+            img = img.convert("RGBA") if img.mode != "RGBA" else img.copy()
+            # Art from a different render can come in at the wrong scale. Rather
+            # than re-cutting the frames, declare a factor in anim.json and
+            # resize here, so the source files stay untouched and the number is
+            # easy to tweak.
+            factor = options.get("scale")
+            if factor and factor != 1:
+                img = img.resize((max(1, round(img.size[0] * factor)),
+                                  max(1, round(img.size[1] * factor))), Image.LANCZOS)
             if options.get("pad"):
                 img = pad_to_cell(img, self.cell)
-            frames.append(img)
+            # Last, so nothing downstream can resample the key colour back in.
+            frames.append(drop_key_residue(img))
         return Clip(
             name=clip_dir.name, frames=frames, fps=fps, persona=persona,
             loop=options.get("loop", True), duration=duration,

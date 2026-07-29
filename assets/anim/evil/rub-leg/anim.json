@@ -1,5 +1,6 @@
 {
   "fps": 8,
   "duration": 4.0,
-  "dynamic": true
+  "dynamic": true,
+  "scale": 0.938
 }

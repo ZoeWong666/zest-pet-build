@@ -70,6 +70,7 @@ folder inherits timing from the atlas row it replaces.
 | `loop` | `false` freezes on the last frame | `true` |
 | `pad` | letterbox art smaller than the cell into the full 192×208 cell | `false` |
 | `dynamic` | let the window resize to this art's own dimensions | `false` |
+| `scale` | resize the frames on load, for art from a different render | `1` |
 
 ### Importing a chroma-keyed strip
 
@@ -101,6 +102,20 @@ Use `--dynamic` when the art is a different shape from the 192x208 cell (the
 leg-rubbing strip is 184x268); the window then takes the art's own size and
 keeps its bottom edge fixed, so the pet's feet stay on the floor. Use `--pad`
 instead to letterbox into the standard cell.
+
+### Keeping the dog the same size
+
+Art from a separate render often comes in at a different scale. Measured ear
+tip to paw, the head-pat strip was 1.18x and the leg-rubbing strip 1.07x the
+atlas dog, which read as the pet suddenly growing. Rather than re-cutting the
+frames, put a factor in `anim.json`:
+
+```json
+{ "scale": 0.846 }
+```
+
+A test measures ear-to-paw height against the atlas idle clip and fails if any
+imported clip drifts more than 10%.
 
 ### A new mode (persona)
 
@@ -146,7 +161,7 @@ two-row) at the right cell size for drawing new frames, plus
 zestpet/core.py        assets, animation clips, state machine — no GUI imports
 zestpet/qt_backend.py  window, rendering, input, menu, tray
 main.py                entry point
-tests/                 91 tests, no display required
+tests/                 93 tests, no display required
 tools/import_strip.py  turn a chroma-keyed sprite strip into an animation
 ```
 

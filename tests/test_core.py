@@ -416,6 +416,48 @@ def test_new_animation_options_are_honoured(tmp_path):
     assert clip.size == (192, 208), "pad option should letterbox into the cell"
 
 
+def test_scale_option_resizes_frames(tmp_path):
+    """Art from a different render can arrive at the wrong scale; a factor in
+    anim.json fixes it without re-cutting the source frames."""
+    root = tmp_path / "assets"
+    folder = root / "anim" / "common" / "big"
+    folder.mkdir(parents=True)
+    from PIL import Image
+    for i in range(2):
+        Image.new("RGBA", (200, 300), (10, 20, 30, 255)).save(folder / f"{i:02d}.png")
+    (folder / "anim.json").write_text(json.dumps({"scale": 0.5}))
+    (root / "manifest.json").write_text(json.dumps({"cell": [192, 208]}))
+
+    clip = ClipLibrary(root).load().resolve("big", COMMON)
+    assert clip.size == (100, 150)
+    assert all(f.size == (100, 150) for f in clip.frames)
+
+
+def test_imported_clips_match_the_atlas_dog_size(lib):
+    """The dog must read as the same size in every clip.
+
+    Measured ear-tip to paw, with the column range narrowed to skip the hand in
+    head-pat and the pant leg in rub-leg. Both strips came from a render at a
+    different scale: head-pat was 1.18x and rub-leg 1.07x before correction.
+    """
+    def dog_height(clip, frame_index, left_fraction):
+        frame = clip.frames[frame_index]
+        px = frame.load()
+        w, h = frame.size
+        x0 = int(w * left_fraction)
+        top = next(y for y in range(h) if any(px[x, y][3] > 128 for x in range(x0, w)))
+        bottom = max(y for y in range(h) if any(px[x, y][3] > 128 for x in range(w)))
+        return bottom - top + 1
+
+    reference = dog_height(lib.resolve("idle", COMMON), 0, 0.0)
+    for name, persona, left in (("head-pat", COMMON, 0.62), ("rub-leg", "evil", 0.45)):
+        clip = lib.resolve(name, persona)
+        if clip is None:
+            continue
+        ratio = dog_height(clip, 0, left) / reference
+        assert 0.9 <= ratio <= 1.1, f"{name} dog is {ratio:.2f}x the atlas dog"
+
+
 def test_bad_anim_json_is_reported_not_fatal(tmp_path):
     root = tmp_path / "assets"
     folder = root / "anim" / "common" / "broken"

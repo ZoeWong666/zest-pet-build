@@ -141,6 +141,10 @@ def shrink_artwork(img: Image.Image, factor: float) -> Image.Image:
     return canvas
 
 
+# How far red and blue must sit above green before a pixel counts as chroma-key
+# residue rather than art. See drop_key_residue.
+MAGENTA_OVER_GREEN = 40
+
 WHITE_KEY_THRESHOLD = 230
 
 
@@ -149,18 +153,27 @@ def drop_key_residue(img: Image.Image) -> Image.Image:
 
     The art is rendered on magenta and keyed by whoever produced it, which
     leaves a one-pixel magenta rim on silhouettes — present in the atlas as
-    well as in the frame folders. Zest's palette is black, tan, yellow,
-    grey-blue and cream, so a strongly magenta pixel (red and blue high, green
-    low) is always residue. Tan and yellow carry too much green to match, and
-    black is too dark.
+    well as in the frame folders.
+
+    Residue is detected by how far red and blue sit above green, not by absolute
+    levels. The rim is magenta diluted by whatever it borders, so it arrives at
+    every brightness: an earlier version tested red and blue against a fixed 110
+    and missed a whole class of darker rim pixels sitting at about (105, 5, 107),
+    leaving roughly 40 a frame on imported strips against 5 on the atlas art.
+    Comparing against green instead is brightness-independent.
+
+    Nothing in the palette is at risk. Black, tan, yellow and cream all have low
+    blue relative to green, grey-blue has low red, and a neutral grey has all
+    three channels together — only a purple has both red and blue well clear of
+    green, and Zest has no purple.
 
     Done at load time so it covers every source, including art added later.
     Vectorised through channel ops; a per-pixel loop would cost far more.
     """
     r, g, b, a = img.split()
-    high = lambda v: 255 if v > 110 else 0  # noqa: E731
-    low = lambda v: 255 if v < 70 else 0  # noqa: E731
-    mask = ImageChops.darker(ImageChops.darker(r.point(high), b.point(high)), g.point(low))
+    over = lambda v: 255 if v > MAGENTA_OVER_GREEN else 0  # noqa: E731
+    mask = ImageChops.darker(ImageChops.subtract(r, g).point(over),
+                             ImageChops.subtract(b, g).point(over))
     # Clearing alpha alone is not enough: the magenta stays in the RGB channels,
     # and any later resampling (a scale factor, a size change) blends it back in
     # around the edges. Zero the colour too.

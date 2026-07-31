@@ -23,7 +23,14 @@ DRAG_THRESHOLD = 3
 CLICK_MAX_SECONDS = 0.3
 LOOK_POLL_MS = 100
 IDLE_BEFORE_WANDER = 12.0
-WANDER_SPEED = 55.0  # px/sec
+# Ground speed is matched to each cycle's own stride so the paws grip instead of
+# skating. Measured from the art by tracking how far the ground-contact pixels
+# travel: the walk keeps all eight frames planted and drags 121px through its
+# 1.0s cycle; the run's three contact frames drag 77px in 0.30s, and the
+# airborne half covers the same again. A single 55px/sec for both left the pet
+# treadmilling — a full gallop advanced it 33px, under a third of a body length.
+GAIT_SPEED = {"walking": 121.0, "running": 257.0}  # px/sec
+RUN_DISTANCE = 320  # far enough that strolling there would take too long
 MIN_WANDER_DISTANCE = 40  # don't bother strolling less than this
 GRAVITY = 1400.0  # px/sec^2
 FLOOR_MARGIN = 8
@@ -42,6 +49,12 @@ PET_WINDOW_KIND = Qt.WindowType.Window if sys.platform == "darwin" else Qt.Windo
 
 def to_pixmap(pil_img) -> QPixmap:
     return QPixmap.fromImage(ImageQt.ImageQt(pil_img))
+
+
+def _gait_of(name: str):
+    """Split a locomotion clip name into (gait, direction), or None."""
+    gait, _, direction = name.rpartition("-")
+    return (gait, direction) if gait in GAIT_SPEED and direction in ("left", "right") else None
 
 
 class PetWidget(QLabel):
@@ -88,6 +101,8 @@ class PetWindow(QWidget):
         self._last_drag_x = 0
         self._last_interaction = time.perf_counter()
         self._wander_target: Optional[int] = None
+        self._wander_gait: str = "running"
+        self._wander_carry: float = 0.0
         self._fall_velocity: Optional[float] = None
         self._tray: Optional[QSystemTrayIcon] = None
 
@@ -264,6 +279,15 @@ class PetWindow(QWidget):
             pick -= width
         return None  # unreachable: pick is always inside one of the ranges
 
+    def _gait_for(self, distance: int) -> str:
+        """Stroll a short hop, run a long one.
+
+        Walking art is evil-only, so any persona without it always runs.
+        """
+        if distance < RUN_DISTANCE and self.library.has("walking-right", self.state.persona):
+            return "walking"
+        return "running"
+
     def _step_wander(self) -> bool:
         """Stroll to a random spot along the current screen after a quiet spell."""
         if self.state.busy or self._dragging or self._fall_velocity is not None:
@@ -289,9 +313,18 @@ class PetWindow(QWidget):
             if target is None:
                 return False
             self._wander_target = target
+            self._wander_gait = self._gait_for(abs(target - self.x()))
+            self._wander_carry = 0.0
+        gait = self._wander_gait
         direction = 1 if self._wander_target > self.x() else -1
-        self.state.play("running-right" if direction > 0 else "running-left")
-        step = max(1, int(WANDER_SPEED * self._timer.interval() / 1000.0))
+        self.state.play(f"{gait}-right" if direction > 0 else f"{gait}-left")
+        # Carry the fraction of a pixel over to the next tick. Truncating it
+        # away made the real speed a function of the timer interval rather than
+        # of the setting: at 16ms a stroll advanced a whole pixel per tick,
+        # 62 px/sec, whatever the constant said.
+        advance = GAIT_SPEED[gait] * self._timer.interval() / 1000.0 + self._wander_carry
+        step = int(advance)
+        self._wander_carry = advance - step
         new_x = self.x() + direction * step
         arrived = (new_x >= self._wander_target) if direction > 0 else (new_x <= self._wander_target)
         if arrived:
@@ -437,8 +470,29 @@ class PetWindow(QWidget):
     def _play_held(self, name: str) -> None:
         self._last_interaction = time.perf_counter()
         self._wander_target = None
+        gait = _gait_of(name)
+        if gait and self._start_traverse(*gait):
+            return
         self.state.play(name, held=True)
         self.render()
+
+    def _start_traverse(self, gait: str, direction: str) -> bool:
+        """Walk or run to the edge of the screen instead of on the spot.
+
+        Held playback keeps the pet still, so picking a gait from the menu ran
+        the legs and went nowhere — a treadmill. Returns False when there is no
+        room to go anywhere, in which case the caller holds the clip as before.
+        """
+        area = self._current_screen_geometry()
+        edge = area.x() if direction == "left" else area.right() - self.width()
+        if abs(edge - self.x()) < MIN_WANDER_DISTANCE:
+            return False
+        self.state.play(f"{gait}-{direction}")  # not held, so _step_wander drives it
+        self._wander_gait = gait
+        self._wander_carry = 0.0
+        self._wander_target = edge
+        self.render()
+        return True
 
     def _start_fall_if_airborne(self) -> None:
         if not self.config.get("gravity", True):

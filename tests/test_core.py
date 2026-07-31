@@ -125,9 +125,13 @@ def test_every_frame_is_rgba_and_not_blank(lib):
 
 
 def test_no_chroma_key_residue(lib):
-    """The art is rendered on magenta. Any strongly magenta pixel left behind is
-    key residue showing as a rim around the silhouette — the palette is black,
-    tan, yellow, grey-blue and cream, so nothing here is legitimately magenta."""
+    """No source may skip the residue cleanup.
+
+    The art is rendered on magenta and every loader path has to run the frames
+    through drop_key_residue. The risk this guards is a missing call — a new
+    source, or a step inserted after the cleanup that resamples the key colour
+    back in — so it asks for zero, not for a small number.
+    """
     offenders = {}
     for clip in lib._clips.values():
         count = 0
@@ -137,11 +141,71 @@ def test_no_chroma_key_residue(lib):
             for y in range(0, h, 2):
                 for x in range(0, w, 2):
                     r, g, b, a = px[x, y]
-                    if a > 128 and r > 110 and b > 110 and g < 70:
+                    if (a > 64 and r - g > core.MAGENTA_OVER_GREEN
+                            and b - g > core.MAGENTA_OVER_GREEN):
                         count += 1
-        if count > 20:  # a handful of sampled pixels is dark fur, not a rim
+        if count:
             offenders[f"{clip.persona}/{clip.name}"] = count
     assert not offenders, f"chroma-key residue left: {offenders}"
+
+
+def test_key_residue_mask_is_calibrated():
+    """The cut between residue and art, pinned against real pixel values.
+
+    Residue arrives at every brightness because the rim is magenta diluted by
+    whatever it borders. Testing against an absolute level missed the darker end
+    of that range: the samples here are measured from imported frames, and the
+    (105, 5, 107) one survived the earlier threshold of 110 and showed as a
+    visible purple fringe.
+    """
+    palette = {
+        "black fur": (30, 25, 20),
+        "tan": (200, 140, 60),
+        "yellow bandana": (255, 210, 60),
+        "cream muzzle": (245, 235, 210),
+        "grey-blue": (100, 130, 160),
+        "neutral grey": (100, 95, 100),
+        "cool shadow on black": (60, 60, 70),
+    }
+    residue = {
+        "bright rim": (216, 3, 202),
+        "mid rim": (115, 34, 110),
+        "dark rim": (105, 5, 107),
+        "darker rim": (77, 5, 67),
+    }
+
+    def surviving_alpha(rgb):
+        img = Image.new("RGBA", (4, 4), rgb + (255,))
+        return core.drop_key_residue(img).getpixel((2, 2))[3]
+
+    for name, rgb in palette.items():
+        assert surviving_alpha(rgb) == 255, f"{name} {rgb} was treated as residue"
+    for name, rgb in residue.items():
+        assert surviving_alpha(rgb) == 0, f"{name} {rgb} survived the cleanup"
+
+
+def test_residue_cleanup_only_takes_a_rim(lib):
+    """Cleanup must shave the edge, not bite into the dog.
+
+    Compared against the frames as they sit on disk, since those are pre-cleanup.
+    """
+    for name, persona in (("walking-right", "evil"), ("running-right", "evil"),
+                          ("idle", "evil")):
+        clip = lib.resolve(name, persona)
+        if clip is None or clip.source != "dir":
+            continue
+        folder = core.asset_root() / "anim" / persona / name
+        raw = [Image.open(p).convert("RGBA") for p in sorted(folder.glob("*.png"))]
+        if len(raw) != clip.frame_count:
+            continue
+
+        def opaque(img):
+            return sum(1 for p in img.getdata() if p[3] > 128)
+
+        before = sum(opaque(f) for f in raw)
+        after = sum(opaque(f) for f in clip.frames)
+        lost = (before - after) / before
+        assert 0 <= lost < 0.08, f"{persona}/{name} lost {lost:.1%} of its artwork"
 
 
 def test_manifest_rows_all_loaded(lib):
@@ -538,9 +602,12 @@ def test_scale_option_shrinks_the_dog_inside_the_cell(tmp_path):
     ("running-left", COMMON, silhouette_scale, (0.0, 1.0)),
     ("running-right", "evil", silhouette_scale, (0.0, 1.0)),
     ("running-left", "evil", silhouette_scale, (0.0, 1.0)),
+    ("walking-right", "evil", silhouette_scale, (0.0, 1.0)),
+    ("walking-left", "evil", silhouette_scale, (0.0, 1.0)),
 ], ids=["head-pat height", "rub-leg height", "head-pat head width",
         "run-right common area", "run-left common area",
-        "run-right evil area", "run-left evil area"])
+        "run-right evil area", "run-left evil area",
+        "walk-right evil area", "walk-left evil area"])
 def test_clips_match_the_reference_dog_size(lib, name, persona, ruler, x_window):
     """The dog must read as the same size in every clip.
 

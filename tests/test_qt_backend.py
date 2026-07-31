@@ -573,6 +573,139 @@ def test_menu_exposes_evil_specials_only_in_evil_mode(window, library, monkeypat
         assert special in evil_labels
 
 
+def test_picking_a_gait_from_the_menu_travels(window, monkeypatch):
+    """Held playback runs the legs on the spot, which reads as a treadmill."""
+    from PyQt6.QtCore import QRect
+    area = QRect(0, 0, window.width() + 800, 400)
+    monkeypatch.setattr(window, "_current_screen_geometry", lambda: area)
+    window.state.set_persona("evil")
+    for name, gait, expected_dir in (("walking-right", "walking", 1),
+                                     ("running-left", "running", -1)):
+        window.move(area.x() + 400, window.y())
+        start = window.x()
+        window.pick_animation(name)
+        assert window.state.clip.name == name
+        assert not window.state.held, "a traversal must not be held in place"
+        assert window._wander_gait == gait
+        assert window._wander_target is not None
+        for _ in range(40):
+            window.tick()
+        moved = window.x() - start
+        assert moved * expected_dir > 0, f"{name} went the wrong way ({moved}px)"
+
+
+def test_picking_a_still_animation_still_holds(window):
+    window.state.set_persona("evil")
+    window.pick_animation("grin")
+    assert window.state.held and window._wander_target is None
+
+
+def test_gait_at_the_edge_holds_instead_of_travelling(window, monkeypatch):
+    """No room to walk means play it where it stands, not stutter at the wall."""
+    from PyQt6.QtCore import QRect
+    area = QRect(0, 0, window.width() + 800, 400)
+    monkeypatch.setattr(window, "_current_screen_geometry", lambda: area)
+    window.state.set_persona("evil")
+    window.move(area.right() - window.width(), window.y())
+    window.pick_animation("walking-right")
+    assert window.state.held and window._wander_target is None
+
+
+def test_gait_speed_matches_the_stride_in_the_art():
+    """Ground speed has to track the art, or the paws skate.
+
+    Reads the stride straight out of the frames: a planted paw travels backwards
+    by one stride per cycle, so the fore-aft span of the ground-contact pixels
+    over the contact phase gives the speed at which the feet grip. Editing the
+    legs moves this — a redraw of the walk cycle shifted its stride from 92px to
+    128px — so the constant is checked against the frames rather than trusted.
+    """
+    from zestpet.qt_backend import GAIT_SPEED
+    lib = core.ClipLibrary().load()
+    for gait, want in GAIT_SPEED.items():
+        clip = lib.resolve(f"{gait}-right", "evil")
+        assert clip is not None, f"no art for {gait}"
+        paws = []
+        for frame in clip.frames:
+            a = frame.getchannel("A").load()
+            w, h = frame.size
+            paw = max(y for y in range(h) if any(a[x, y] > 128 for x in range(w)))
+            band = [x for y in range(paw - 4, paw + 1) for x in range(w) if a[x, y] > 128]
+            paws.append((paw, min(band), max(band)))
+        floor = max(p for p, _, _ in paws)
+        # A blurred paw reads a few pixels high, so contact is a window not an
+        # exact match; the airborne frames of the run sit 14px or more clear.
+        contact = [(lo, hi) for p, lo, hi in paws if floor - p <= 10]
+        span = max(hi for _, hi in contact) - min(lo for lo, _ in contact)
+        measured = span / (len(contact) / clip.fps)
+        assert abs(measured - want) / want < 0.15, (
+            f"{gait}: art strides at {measured:.0f} px/sec, GAIT_SPEED says {want:.0f}")
+
+
+def test_gait_matches_the_distance(window):
+    """A short hop is a stroll, a long trip is a run."""
+    from zestpet.qt_backend import RUN_DISTANCE, MIN_WANDER_DISTANCE
+    window.state.set_persona("evil")
+    assert window._gait_for(MIN_WANDER_DISTANCE) == "walking"
+    assert window._gait_for(RUN_DISTANCE - 1) == "walking"
+    assert window._gait_for(RUN_DISTANCE) == "running"
+    assert window._gait_for(RUN_DISTANCE * 3) == "running"
+
+
+def test_gait_falls_back_to_running_without_walk_art(window):
+    """The walk cycle is evil-only art, so the plain persona has to keep running
+    rather than asking for a clip that cannot resolve."""
+    from zestpet.qt_backend import RUN_DISTANCE
+    window.state.set_persona(COMMON)
+    assert not window.library.has("walking-right", COMMON)
+    assert window._gait_for(RUN_DISTANCE // 2) == "running"
+
+
+def test_wander_plays_the_gait_it_picked(window, monkeypatch):
+    from PyQt6.QtCore import QRect
+    from zestpet.qt_backend import IDLE_BEFORE_WANDER, RUN_DISTANCE
+    window.state.set_persona("evil")
+    area = QRect(0, 0, window.width() + RUN_DISTANCE * 2, 400)
+    monkeypatch.setattr(window, "_current_screen_geometry", lambda: area)
+    window.config["wander"] = True
+    for target, expected in ((60, "walking"), (RUN_DISTANCE + 80, "running")):
+        window.move(0, window.y())
+        window._wander_target = None
+        window._last_interaction -= IDLE_BEFORE_WANDER + 1
+        monkeypatch.setattr(window, "_pick_wander_target", lambda *a, t=target: t)
+        window._step_wander()
+        assert window._wander_gait == expected
+        assert window.state.clip.name == f"{expected}-right"
+
+
+def test_wander_speed_does_not_depend_on_the_tick_rate(window, monkeypatch):
+    """Sub-pixel movement has to carry over between ticks.
+
+    Truncating it made the real speed a property of the timer interval: at 16ms
+    a stroll moved one whole pixel a tick, 62px/sec, whichever constant was set.
+    """
+    from PyQt6.QtCore import QRect
+    from zestpet.qt_backend import GAIT_SPEED, IDLE_BEFORE_WANDER
+    area = QRect(0, 0, 4000, 400)
+    monkeypatch.setattr(window, "_current_screen_geometry", lambda: area)
+    window.config["wander"] = True
+    for gait in ("walking", "running"):
+        window.move(0, window.y())
+        window._wander_target = 3000
+        window._wander_gait = gait
+        window._wander_carry = 0.0
+        window._last_interaction -= IDLE_BEFORE_WANDER + 1
+        ticks = 200
+        start = window.x()
+        for _ in range(ticks):
+            window._step_wander()
+        travelled = window.x() - start
+        seconds = ticks * window._timer.interval() / 1000.0
+        expected = GAIT_SPEED[gait] * seconds
+        assert abs(travelled - expected) <= 2, (
+            f"{gait}: moved {travelled}px in {seconds:.2f}s, expected {expected:.0f}")
+
+
 def test_scale_steps_match_the_pre_refactor_build():
     """Parity check. Lived in test_core.py, which is meant to import no GUI
     toolkit — reading qt_backend.SCALES pulls in PyQt6, so it belongs here."""
